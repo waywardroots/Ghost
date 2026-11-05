@@ -35,10 +35,13 @@ def check(name, cond):
 
 def expect_error(name, fn, *a, contains="", **kw):
     try:
-        fn(*a, **kw)
+        r = fn(*a, **kw)
     except ms.LiveError as e:
         check(name, contains.lower() in str(e).lower())
         return str(e)
+    if isinstance(r, dict) and "error" in r:  # tools report errors as results
+        check(name, contains.lower() in r["error"].lower())
+        return r["error"]
     raise AssertionError("FAILED (no error): " + name)
 
 
@@ -273,14 +276,15 @@ def main():
         cut = dev.parameters[1]
         envs = [c.envelopes.get(id(cut)) for c in song.tracks[bass].arrangement_clips
                 if c.start_time < 48 and c.end_time > 32]
-        check("automation written into the clips in range", r["clips"] == 1 and all(envs))
+        check("automation placed on the timeline", r["clips_placed"] == 1 and all(envs))
         e = envs[0]
         lo, mid, hi = e.value_at(0.1), e.value_at(8.1), e.value_at(15.9)
         check("sweep rises from 200 Hz to 10 kHz", cut.str_for_value(lo).startswith(("19", "20", "21"))
               and lo < mid < hi and cut.str_for_value(hi).endswith("kHz"))
         check("parameter rests at the end value", str(cut).startswith(("9.9", "10.0")))
-        expect_error("automation needs arrangement clips there", ms.automate, bass, 0, "Filter Cutoff",
-                     [P(bar=200, value=0.1), P(bar=204, value=0.9)], contains="no Arrangement clips")
+        slots_before = len(song.scenes)
+        check("temporary copy cleaned up", len(song.scenes) == slots_before and
+              sum(1 for sl in song.tracks[bass].clip_slots if sl.has_clip) == 3)
         expect_error("bad unit explained", ms.automate, bass, 0, "Filter Cutoff",
                      [P(bar=9, value="3 dB"), P(bar=13, value="1 kHz")], contains="not db")
 

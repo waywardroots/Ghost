@@ -141,7 +141,26 @@ measurements plus a spectrogram image. Work in a loop: shape -> listen -> compar
 words, and treat the user's ears as the final judge."""
 
 server = _Server("ghost", instructions=INSTRUCTIONS)
-tool = server.tool
+
+
+def tool():
+    """Register a tool. Ghost errors come back as {"error": ...} so every client shows the
+    reason (some hide the text of failed tool calls)."""
+    import functools
+    import inspect
+
+    def wrap(fn):
+        if inspect.iscoroutinefunction(fn):
+            return server.tool()(fn)
+
+        @functools.wraps(fn)
+        def inner(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except (LiveError, presets.PresetError) as e:
+                return {"error": str(e)}
+        return server.tool()(inner)
+    return wrap
 
 
 class Note(BaseModel):
@@ -349,14 +368,16 @@ class AutoPoint(BaseModel):
 
 @tool()
 def automate(track_index: int, device_index: int, parameter: str, points: list[AutoPoint],
-             step_beats: float = 0.25) -> dict:
-    """Draw automation (filter sweeps, volume rises, reverb throws) into the Arrangement clips on a
-    track between the first and last point, joining points with straight lines. Add the device
-    first (e.g. load_device 'Auto Filter'). End sweeps on the value the device should rest at,
-    because the parameter stays there after the automation ends."""
+             clip_index: int = 0, step_beats: float = 0.25) -> dict:
+    """Draw automation (filter sweeps, volume rises, reverb throws) onto the Arrangement between
+    the first and last point, joining points with straight lines. Live only allows drawing into
+    Session clips, so Ghost re-places copies of the track's Session clip (clip_index) over that
+    stretch with the automation inside - pick the clip that plays there. Add the device first
+    (e.g. load_device 'Auto Filter'). End sweeps on the value the device should rest at,
+    because the parameter stays there afterwards."""
     return live.send("automate", track_index=track_index, device_index=device_index,
                      parameter=parameter, points=[p.model_dump() for p in points],
-                     step_beats=step_beats)
+                     clip_index=clip_index, step_beats=step_beats)
 
 
 def _at_playhead(beat: float, **kw) -> dict:

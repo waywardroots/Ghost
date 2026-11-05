@@ -74,6 +74,13 @@ class Clip:
         self.loop_start, self.loop_end = 0.0, length
         self.is_playing = False
         self._notes = []
+        self.envelopes = {}
+
+    def automation_envelope(self, param):
+        return self.envelopes.get(id(param))
+
+    def create_automation_envelope(self, param):
+        return self.envelopes.setdefault(id(param), Envelope())
 
     def add_new_notes(self, specs):
         for s in specs:
@@ -203,7 +210,10 @@ class Track:
         # like Live: a new clip replaces whatever it covers on the timeline
         self.arrangement_clips = [c for c in self.arrangement_clips
                                   if c.end_time <= t or c.start_time >= t + length]
-        self.arrangement_clips.append(ArrClip(clip.name, t, length))
+        ac = ArrClip(clip.name, t, length)
+        import copy as _copy
+        ac.envelopes = _copy.deepcopy(getattr(clip, "envelopes", {}))  # envelopes travel with clips
+        self.arrangement_clips.append(ac)
         self.arrangement_clips.sort(key=lambda c: c.start_time)
 
 
@@ -229,7 +239,7 @@ class ArrClip:
         return self.envelopes.get(id(param))
 
     def create_automation_envelope(self, param):
-        return self.envelopes.setdefault(id(param), Envelope())
+        raise RuntimeError("Not a session clip or parameter belongs to another track.")
 
 
 class Pad:

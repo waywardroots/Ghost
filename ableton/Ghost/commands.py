@@ -602,12 +602,21 @@ class CommandHandler(object):
                 song.delete_scene(len(list(song.scenes)) - 1)
         return {"placed": os.path.basename(path), "start_bar": bar, "method": "via session"}
 
-    def cmd_automate(self, track_index, device_index, parameter, points, step_beats=0.25):
-        """Draw automation into the Arrangement clips on a track: points [{bar, value}] are
-        joined with straight lines. value = raw number or display text ('200 Hz', '-12 dB')."""
-        track = self._track(track_index)
+    def cmd_automate(self, track_index, device_index, parameter, points, clip_index=0,
+                     step_beats=0.25):
+        """Draw automation onto the Arrangement between the first and last point.
+
+        Live only lets scripts draw into Session clips, so for each stretch of the timeline
+        Ghost copies the track's Session clip (clip_index) into a spare slot, draws the
+        automation into that copy, places the copy on the timeline (replacing what was there)
+        and removes the spare copy. points: [{bar, value}], value = raw or display text."""
+        song, track = self.song, self._track(track_index)
         d = self._device(track_index, device_index)
         p = self._find_param(d, list(d.parameters), parameter)
+        src = self._slot(track, clip_index)
+        if not src.has_clip:
+            raise CommandError("track %d has no Session clip in slot %d to carry the automation"
+                               % (track_index, clip_index))
         if not isinstance(points, (list, tuple)) or len(points) < 2:
             raise CommandError("give at least two points")
         bpb = self._beats_per_bar()
@@ -620,12 +629,8 @@ class CommandHandler(object):
         finally:
             p.value = old  # resolving may probe the parameter; put it back
         t0, t1 = pts[0][0], pts[-1][0]
-        clips = [c for c in (getattr(track, "arrangement_clips", []) or [])
-                 if float(c.end_time) > t0 and float(c.start_time) < t1]
-        if not clips:
-            raise CommandError("no Arrangement clips on track %d between bars %g and %g - "
-                               "automation is written into the clips there"
-                               % (track_index, t0 / bpb + 1, t1 / bpb + 1))
+        if t1 <= t0:
+            raise CommandError("points must span some time")
 
         def value_at(t):
             for (a, va), (b, vb) in zip(pts, pts[1:]):
@@ -633,33 +638,42 @@ class CommandHandler(object):
                     return va if b == a else va + (vb - va) * (t - a) / (b - a)
             return pts[-1][1] if t > t1 else pts[0][1]
 
+        length = float(src.clip.length)
         step = max(0.0625, float(step_beats))
-        written = 0
-        for c in clips:
-            env = c.automation_envelope(p)
-            if env is None:
-                env = c.create_automation_envelope(p)
-            if env is None:
-                raise CommandError("Live won't automate %s on this clip" % p.name)
-            c_start, c_end = float(c.start_time), float(c.end_time)
-            offset = float(getattr(c, "start_marker", 0.0) or 0.0)
-            t = max(t0, c_start)
-            end = min(t1, c_end)
-            while t < end - 1e-9:
-                st = min(step, end - t)
-                env.insert_step(t - c_start + offset, st, value_at(t + st / 2))
-                written += 1
-                t += st
-            # after the last point inside this clip, hold the final value
-            if t1 < c_end and c_start <= t1:
-                env.insert_step(t1 - c_start + offset, c_end - t1, pts[-1][1])
-                written += 1
-            if t0 > c_start and c_end > t0:  # before the first point, hold the first value
-                env.insert_step(offset, t0 - c_start, pts[0][1])
-                written += 1
-        p.value = pts[-1][1]  # outside the automated clips, stay where the automation ends
-        return {"parameter": p.name, "device": d.name, "clips": len(clips), "steps": written,
-                "ends_at": params_mod.display(p), "start_bar": t0 / bpb + 1, "end_bar": t1 / bpb + 1}
+        made_scene, placed, steps = False, 0, 0
+        free = [s for s in track.clip_slots if not s.has_clip]
+        if not free:
+            song.create_scene(-1)
+            made_scene = True
+            free = [list(track.clip_slots)[-1]]
+        tmp = free[0]
+        try:
+            start = t0
+            while start < t1 - 1e-9:
+                src.duplicate_clip_to(tmp)
+                clip = tmp.clip
+                env = clip.automation_envelope(p) or clip.create_automation_envelope(p)
+                if env is None:
+                    raise CommandError("Live won't automate %s here" % p.name)
+                t = 0.0
+                while t < length - 1e-9:
+                    st = min(step, length - t)
+                    env.insert_step(t, st, value_at(start + t + st / 2))
+                    steps += 1
+                    t += st
+                track.duplicate_clip_to_arrangement(clip, start)
+                tmp.delete_clip()
+                placed += 1
+                start += length
+        finally:
+            if tmp.has_clip:
+                tmp.delete_clip()
+            if made_scene:
+                song.delete_scene(len(list(song.scenes)) - 1)
+        p.value = pts[-1][1]  # rest at the end value outside the automated clips
+        return {"parameter": p.name, "device": d.name, "clips_placed": placed, "steps": steps,
+                "ends_at": params_mod.display(p), "start_bar": t0 / bpb + 1,
+                "end_bar": (t0 + placed * length) / bpb + 1}
 
     # Locators: Live moves the playhead a moment after it's set, so placing a locator takes
     # two steps (set_song_time, then cue_at_playhead once the playhead has arrived).
