@@ -243,6 +243,11 @@ def main():
         check("next build goes after existing work", r2["sections"][0]["start_bar"] == 25)
         info = ms.get_arrangement_info()
         check("arrangement info", info["length_bars"] == 28 and [l["name"] for l in info["locators"]] == ["Intro", "Drop", "Outro"])
+        r3 = ms.build_arrangement([Sec(name="New A", bars=4, clips=[Ref(track_index=drums)]),
+                                   Sec(name="New B", bars=4, clips=[Ref(track_index=drums)])], start_bar=1)
+        names = sorted((c.time, c.name) for c in song.cue_points)
+        check("rebuild replaces stale locators in its range", names[:2] == [(0, "New A"), (16, "New B")]
+              and all(n not in ("Intro",) for _, n in names) and (32, "Drop") in names)
         # fix up locators: wrong ones removed, right ones placed
         song.cue_points.append(fake_live.types.SimpleNamespace(time=60.0, name="9"))
         locs = ms.set_locators([ms.Locator(bar=1, name="Intro"), ms.Locator(bar=9, name="Drop")],

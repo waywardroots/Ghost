@@ -451,7 +451,16 @@ def build_arrangement(sections: list[Section], start_bar: Optional[int] = None) 
     r = live.send("build_arrangement", sections=[s.model_dump() for s in sections],
                   start_bar=start_bar)
     try:
-        r["locators"] = _place_locators([(sec["start_beat"], sec["section"]) for sec in r["sections"]])
+        wanted = [(sec["start_beat"], sec["section"]) for sec in r["sections"]]
+        lo = wanted[0][0]
+        hi = lo + sum(sec["bars"] for sec in r["sections"]) * (wanted[1][0] - lo) / r["sections"][0]["bars"] \
+            if len(wanted) > 1 else lo
+        keep = {b for b, _ in wanted}
+        # locators left inside the rebuilt range from an earlier layout would mislabel it
+        for cue in live.send("get_locators"):
+            if lo <= cue["beat"] < hi and cue["beat"] not in keep:
+                _at_playhead(cue["beat"], delete=True)
+        r["locators"] = _place_locators(wanted)
     except LiveError as e:
         r["locator_problem"] = str(e)
     return r
