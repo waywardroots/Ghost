@@ -15,8 +15,10 @@ sys.path[:0] = [str(ROOT), str(ROOT / "ableton"), str(ROOT / "tests")]
 os.environ.setdefault("GHOST_LIVE_PORT", "9877")
 import tempfile
 os.environ["GHOST_SNAPSHOTS"] = os.path.join(tempfile.mkdtemp(), "snaps.json")
+os.environ["GHOST_LISTEN_DIR"] = tempfile.mkdtemp()
 
 import fake_live  # noqa: E402
+fake_live.RECORD_DIR = __import__("tempfile").mkdtemp()
 
 fake_live.install_fake_modules()
 import Ghost  # noqa: E402  (the Remote Script package)
@@ -173,6 +175,38 @@ def main():
         check("recall restores switches", str(dev.parameters[5]) == "Saw")
         check("snapshots listed", {"test A", "test B"} <= {s["name"] for s in ms.list_sound_snapshots()})
         expect_error("missing snapshot explained", ms.recall_sound_snapshot, bass, 0, "nope", contains="Saved:")
+
+        # ---- listening: record the synth, change it, hear the difference ----
+        ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="300 Hz")])
+        song.tracks[vox].solo = True  # user had something soloed; must be restored
+        tracks_before, scenes_before = len(song.tracks), len(song.scenes)
+        ms.live.timeout = 25
+        orig_wait = ms.time.sleep
+        ms.time.sleep = lambda s: orig_wait(min(s, 0.05))  # don't wait in real time in tests
+        try:
+            out = ms.listen_to_track(bass, beats=8)
+            import json as _j
+            dark = _j.loads(out[0])
+            check("listen returns measurements + picture", "heard" in dark and isinstance(out[1], ms.Image))
+            check("hears the pitch", dark["measurements"]["pitch_note"] == "C1")
+            check("hears the beating of detuned saws", dark["measurements"]["volume_movement_hz"] is not None)
+            check("session restored after listening", len(song.tracks) == tracks_before
+                  and len(song.scenes) == scenes_before
+                  and all(t.name != "Ghost Listen" for t in song.tracks))
+            check("solo states restored", song.tracks[vox].solo and not song.tracks[bass].solo)
+            ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="3 kHz")])
+            bright = _j.loads(ms.listen_to_track(bass, beats=8, compare_to="last")[0])
+            check("hears that it got brighter", any("brighter" in d for d in bright["differences"]))
+            check("brightness rose", bright["measurements"]["brightness_hz"] > dark["measurements"]["brightness_hz"] * 1.5)
+            ref = dark["audio_file"]
+            r = _j.loads(ms.analyze_audio_file(ref, compare_to=bright["audio_file"])[0])
+            check("analyze a file against a reference", any("darker" in d for d in r["differences"]))
+            expect_error("listening to an audio track needs a clip", ms.listen_to_track, vox,
+                         notes=[ms.Note(pitch=48, start=0, duration=1)], contains="MIDI track")
+            check("failed listen leaves no listen track", all(t.name != "Ghost Listen" for t in song.tracks))
+        finally:
+            ms.time.sleep = orig_wait
+            song.tracks[vox].solo = False
 
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")

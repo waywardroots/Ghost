@@ -3,3 +3,4 @@ librosa>=0.10
 soundfile
 mcp>=1.2
 zstandard
+matplotlib

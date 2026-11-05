@@ -309,14 +309,7 @@ class CommandHandler(object):
         clean = self._clean_notes(notes)
         if replace:
             self._clear_notes(clip)
-        if hasattr(clip, "add_new_notes"):  # Live 11+
-            import Live
-            spec = Live.Clip.MidiNoteSpecification
-            clip.add_new_notes(tuple(
-                spec(pitch=p, start_time=s, duration=d, velocity=v, mute=m)
-                for p, s, d, v, m in clean))
-        else:
-            clip.set_notes(tuple(clean))
+        self._write_notes(clip, clean)
         return {"added": len(clean), "clip_length_beats": float(clip.length)}
 
     def cmd_get_notes(self, track_index, clip_index):
@@ -441,6 +434,136 @@ class CommandHandler(object):
         self.app.browser.load_item(item)
         return {"loaded": item.name, "method": "browser", "from": bpath,
                 "track_devices": [d.name for d in track.devices]}
+
+    # ------------------------------------------------------------------ listening
+    # Ghost records a track through Live's "Resampling" input so it can analyze the result.
+    LISTEN_TRACK = "Ghost Listen"
+
+    def cmd_start_audition(self, track_index, beats=8.0, notes=None, clip_index=None):
+        """Play a phrase on a track (soloed) and record it on a temporary Resampling track."""
+        if getattr(self, "_audition", None):
+            raise CommandError("a recording is already running; call finish_audition first")
+        beats = float(beats)
+        if not 1 <= beats <= 64:
+            raise CommandError("beats must be between 1 and 64")
+        src = self._track(track_index)
+        song = self.song
+        state = {"src": src, "solos": [(t, bool(t.solo)) for t in self._tracks()],
+                 "created_scene": None, "src_slot": None, "temp_clip": False}
+
+        # what to play
+        if clip_index is None:
+            if not notes:
+                raise CommandError("give notes to play, or the clip_index of an existing clip")
+            if self._track_type(src) != "midi":
+                raise CommandError("to play notes the track must be a MIDI track")
+            clean = self._clean_notes(notes)
+            song.create_scene(-1)
+            row = len(list(song.scenes)) - 1
+            state["created_scene"] = row
+            slot = list(src.clip_slots)[row]
+            slot.create_clip(beats)
+            state["temp_clip"] = True
+            self._write_notes(slot.clip, clean)
+        else:
+            slot = self._slot(src, clip_index)
+            if not slot.has_clip:
+                raise CommandError("no clip at that slot to play")
+            if state["created_scene"] is None:
+                song.create_scene(-1)
+                state["created_scene"] = len(list(song.scenes)) - 1
+            row = state["created_scene"]
+        state["src_slot"] = slot
+
+        # the listening track
+        song.create_audio_track(-1)
+        listen = self._tracks()[-1]
+        listen.name = self.LISTEN_TRACK
+        state["listen"] = listen
+        try:
+            routing = [r for r in listen.available_input_routing_types
+                       if ("%s" % (r.display_name,)).strip().lower() == "resampling"]
+            if not routing:
+                raise CommandError("Live didn't offer a 'Resampling' input")
+            listen.input_routing_type = routing[0]
+            listen.current_monitoring_state = 2  # Off, so it doesn't feed back
+            listen.arm = True
+            for t in self._tracks():  # hear only the source; solos are restored afterwards
+                if t is not src and getattr(t, "solo", False):
+                    t.solo = False
+            src.solo = True
+            listen_slot = list(listen.clip_slots)[state["created_scene"]]
+            state["listen_slot"] = listen_slot
+            slot.fire()
+            try:
+                listen_slot.fire(record_length=beats)
+                state["auto_stop"] = True
+            except TypeError:  # older Live: stop it ourselves
+                listen_slot.fire()
+                state["auto_stop"] = False
+        except Exception:
+            self._audition = state
+            self._cleanup_audition()
+            raise
+        self._audition = state
+        seconds = (beats + 4.0) * 60.0 / float(song.tempo)  # + up to one bar of launch delay
+        return {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
+
+    def cmd_finish_audition(self):
+        """Stop the recording (if it's done) and return the recorded file. Cleanup is separate
+        so the file can be copied first."""
+        st = getattr(self, "_audition", None)
+        if not st:
+            raise CommandError("no recording is running")
+        slot = st["listen_slot"]
+        clip = slot.clip if slot.has_clip else None
+        if clip is not None and getattr(clip, "is_recording", False) and st.get("auto_stop"):
+            return {"done": False}
+        self.song.stop_playing()
+        if not slot.has_clip:
+            return {"done": True, "file": None,
+                    "error": "nothing was recorded (check Live's audio device is running)"}
+        return {"done": True, "file": getattr(slot.clip, "file_path", None)}
+
+    def cmd_end_audition(self):
+        if not getattr(self, "_audition", None):
+            return {"cleaned": False}
+        self._cleanup_audition()
+        return {"cleaned": True}
+
+    def _cleanup_audition(self):
+        st, self._audition = self._audition, None
+        song = self.song
+        try:
+            song.stop_playing()
+        except Exception:
+            pass
+        for t, was in st.get("solos", []):
+            try:
+                t.solo = was
+            except Exception:
+                pass
+        listen = st.get("listen")
+        if listen is not None:
+            tracks = self._tracks()
+            if listen in tracks:
+                song.delete_track(tracks.index(listen))
+        if st.get("temp_clip") and st.get("src_slot") is not None and st["src_slot"].has_clip:
+            st["src_slot"].delete_clip()
+        row = st.get("created_scene")
+        if row is not None and row < len(list(song.scenes)):
+            empty = all(not list(t.clip_slots)[row].has_clip for t in self._tracks())
+            if empty:
+                song.delete_scene(row)
+
+    def _write_notes(self, clip, clean):
+        if hasattr(clip, "add_new_notes"):
+            import Live
+            spec = Live.Clip.MidiNoteSpecification
+            clip.add_new_notes(tuple(spec(pitch=p, start_time=s, duration=d, velocity=v, mute=m)
+                                     for p, s, d, v, m in clean))
+        else:
+            clip.set_notes(tuple(clean))
 
     # ------------------------------------------------------------------ device parameters
     def _device(self, track_index, device_index):

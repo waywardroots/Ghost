@@ -75,6 +75,7 @@ Session: get_session_info, get_track_info, set_tempo, set_time_signature, start/
 Tracks: create_midi_track, create_audio_track, set_track_name, set_track_volume, delete_track.
 Clips and notes: create_clip, add_notes, get_notes, set_clip_name, set_clip_loop, delete_clip, fire_clip, stop_track_clips, fire_scene.
 Sound: search_live_browser, load_device (Live devices, VST/AU plugins, presets, drum kits), load_sample.
+Listening: listen_to_track, analyze_audio_file.
 Sound design: get_device_parameters, set_device_parameters, set_device_parameter, save/recall/list_sound_snapshot(s), find/read/write_preset_file.
 Your library: search_samples, list_my_plugins, get_style_profile.
 
@@ -87,6 +88,11 @@ Ask for sounds in plain words: *"Load Serum on a new track and make a dark detun
 - **Big plugins** (Serum 2 live tweaking, Pigments, Omnisphere, Spire...) only share the controls you expose. Do it once per plugin: open it in Live, click **Configure** (wrench icon), move the knobs you want Ghost to use (up to 128), then click Configure again. Saving the plugin as a Live preset afterwards keeps that setup.
 - To keep a sound from other plugins, save it in the plugin or with Live's Save Preset button. Ghost can't write their preset files.
 
+### Listening
+Ghost can check its own work. `listen_to_track` plays a phrase on a track (soloed), records it inside Live through **Resampling**, and measures the result: low end per band, brightness, pitch, grit, movement (e.g. reese beating, wobble rate), stereo width (and whether the low end is too wide), attack and sustain. It also renders a spectrogram picture Claude can look at. `analyze_audio_file` does the same for any sample or reference, and `compare_to` lists how two sounds differ, so Ghost can shape a sound until it matches a reference.
+
+Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's playback while it records, and puts your solo settings back afterwards. Check it yourself any time: `py -3.13 listen.py sound.wav [reference.wav]`.
+
 ### Good to know
 - Samples load straight from any folder on Live 12.0.5+ (onto audio tracks). Otherwise, add your sample folders to **Places** in Live's browser so Ghost can find them.
 - Plugins must be enabled in Live (Settings > Plug-Ins) to appear in its browser.
@@ -97,4 +103,4 @@ Ask for sounds in plain words: *"Load Serum on a new track and make a dark detun
 python tests/test_phase2.py
 python tests/test_presets.py
 ```
-Runs the full chain against a simulated Live, plus preset-file tests (96 checks).
+Runs the full chain against a simulated Live, plus preset-file tests (106 checks).

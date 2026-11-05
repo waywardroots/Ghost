@@ -88,10 +88,43 @@ class Clip:
         self._notes = [n for n in self._notes if id(n) not in keep]
 
 
+RECORD_DIR = None  # set by tests: where "Live" writes recordings
+SONG = None
+
+
+def render_track(track, seconds):
+    """Fake 'audio' for a track: two detuned saws through a low-pass set by its synth's cutoff."""
+    import numpy as np
+    import soundfile as sf
+    sr = 44100
+    t = np.arange(int(sr * seconds)) / sr
+    cutoff_raw = 0.5
+    for d in track.devices:
+        for p in d.parameters:
+            if p.name == "Filter Cutoff":
+                cutoff_raw = p.value
+    fc = 20.0 * (1000.0 ** cutoff_raw)
+    f = 65.41
+    saw = lambda fr: 2 * ((fr * t) % 1) - 1
+    x = 0.3 * (saw(f * 1.007) + saw(f / 1.007))
+    y = np.zeros_like(x)
+    s1 = s2 = 0.0
+    g = 1 - np.exp(-2 * np.pi * min(fc, 18000) / sr)
+    for i in range(x.size):
+        s1 += g * (x[i] - s1)
+        s2 += g * (s1 - s2)
+        y[i] = s2
+    import os
+    path = os.path.join(RECORD_DIR, "rec_%d.wav" % len(os.listdir(RECORD_DIR)))
+    sf.write(path, np.stack([y, y], 1), sr)
+    return path
+
+
 class ClipSlot:
-    def __init__(self):
+    def __init__(self, track=None):
         self.clip = None
         self.fired = 0
+        self.track = track
 
     @property
     def has_clip(self):
@@ -108,8 +141,24 @@ class ClipSlot:
     def delete_clip(self):
         self.clip = None
 
-    def fire(self):
+    def fire(self, record_length=None, launch_quantization=None):
         self.fired += 1
+        tr = self.track
+        if self.clip is None and tr is not None and tr.arm and tr.has_audio_input:
+            assert tr.input_routing_type.display_name == "Resampling", "fake only records resampling"
+            assert tr.current_monitoring_state == 2, "monitoring should be Off"
+            soloed = [t for t in SONG.tracks if t.solo]
+            assert len(soloed) == 1, "exactly the source track should be soloed"
+            beats = record_length or 8.0
+            c = Clip(beats, is_midi=False, name="recording")
+            c.file_path = render_track(soloed[0], beats * 60.0 / SONG.tempo)
+            c.is_recording = False
+            self.clip = c
+
+
+class Routing:
+    def __init__(self, name):
+        self.display_name = name
 
 
 class Track:
@@ -121,7 +170,10 @@ class Track:
         self.can_be_armed = True
         self.arm = self.mute = self.solo = False
         self.devices = []
-        self.clip_slots = [ClipSlot() for _ in range(scenes)]
+        self.clip_slots = [ClipSlot(self) for _ in range(scenes)]
+        self.available_input_routing_types = [Routing("Ext. In"), Routing("Resampling"), Routing("No Input")]
+        self.input_routing_type = self.available_input_routing_types[0]
+        self.current_monitoring_state = 1
         self.mixer_device = types.SimpleNamespace(volume=Param("Volume", 0.85, 0.0, 1.0))
         self.stopped = 0
 
@@ -139,6 +191,8 @@ class Scene:
 
 class Song:
     def __init__(self, scenes=8):
+        global SONG
+        SONG = self
         self.scenes = [Scene() for _ in range(scenes)]
         self.tracks = []
         self.return_tracks = [types.SimpleNamespace(name="A-Reverb"), types.SimpleNamespace(name="B-Delay")]
@@ -168,7 +222,12 @@ class Song:
     def create_scene(self, index):
         self.scenes.append(Scene())
         for t in self.tracks:
-            t.clip_slots.append(ClipSlot())
+            t.clip_slots.append(ClipSlot(t))
+
+    def delete_scene(self, index):
+        del self.scenes[index]
+        for t in self.tracks:
+            del t.clip_slots[index]
 
     def start_playing(self):
         self.is_playing = True

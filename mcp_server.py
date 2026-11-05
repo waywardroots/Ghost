@@ -14,10 +14,12 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from indexer import app_dir, build_profile, normalize_key_query, open_db  # noqa: E402
 import presets  # noqa: E402
 
+import listen  # noqa: E402
+
 try:  # mcp 2.x
-    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver import Image, MCPServer as _Server
 except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import FastMCP as _Server, Image
 from pydantic import BaseModel, Field  # installed with mcp
 
 LIVE_HOST = os.environ.get("GHOST_LIVE_HOST", "127.0.0.1")
@@ -129,7 +133,12 @@ Sound design:
 - For Serum 2 and u-he synths (Diva, Hive, Repro-1, Repro-5) you can also write complete presets:
   find_preset_files (Serum 2 and u-he; prefer an init patch or the user's own presets), read_preset_file to learn
   the layout, then write_preset_file. Ghost can't save presets for other plugins; tell the user
-  to save from the plugin or with Live's Save Preset button when they like a sound."""
+  to save from the plugin or with Live's Save Preset button when they like a sound.
+
+Listening: you can't hear audio directly, but listen_to_track records a track and gives you
+measurements plus a spectrogram image. Work in a loop: shape -> listen -> compare with the goal
+(or a reference via analyze_audio_file / compare_to) -> adjust. Say what you measured in plain
+words, and treat the user's ears as the final judge."""
 
 server = _Server("ghost", instructions=INSTRUCTIONS)
 tool = server.tool
@@ -427,6 +436,103 @@ def write_preset_file(template_path: str, name: str, changes: dict[str, float | 
     and value scales exactly as read_preset_file shows them. The user then picks it in the
     synth's own preset browser (folder 'Ghost'; refresh the browser if needed)."""
     return _presets_call(presets.write_preset, template_path, name, changes, description)
+
+
+# ---- listening ------------------------------------------------------------------
+LISTEN_DIR = Path(os.environ.get("GHOST_LISTEN_DIR", str(app_dir() / "listening")))
+_last_heard: dict = {}
+
+
+def _wait_for_file(path: str, timeout: float = 8.0):
+    p, last, stable, t0 = Path(path), -1, 0, time.time()
+    while time.time() - t0 < timeout:
+        size = p.stat().st_size if p.exists() else -1
+        if size > 1000 and size == last:
+            stable += 1
+            if stable >= 2:
+                return
+        else:
+            stable = 0
+        last = size
+        time.sleep(0.25)
+    if not p.exists():
+        raise LiveError(f"Live said it recorded to {path}, but that file doesn't exist")
+
+
+def _report(path: str, title: str, compare_to: Optional[str]):
+    m = listen.analyze(path)
+    result = {"heard": m.get("summary"), "measurements": {k: v for k, v in m.items() if k != "summary"},
+              "audio_file": path}
+    if compare_to:
+        ref_path = _last_heard.get("path") if compare_to == "last" else compare_to
+        if not ref_path or not Path(ref_path).exists():
+            raise LiveError("nothing to compare with - give a file path, or listen once first for 'last'")
+        ref = listen.analyze(ref_path)
+        result["compared_with"] = ref_path
+        result["reference_heard"] = ref.get("summary")
+        result["differences"] = listen.compare(m, ref)["differences"]
+    out = [json.dumps(result, indent=1, default=str)]
+    if not m.get("silent"):
+        png = listen.spectrogram(path, str(Path(path).with_suffix(".png")), title)
+        out.append(Image(path=png))
+    _last_heard.update(path=path)
+    return out
+
+
+DEFAULT_PHRASE = [  # one long note (tone, movement, sustain), then short ones (attack, release)
+    Note(pitch=48, start=0.0, duration=4.0, velocity=100),
+    Note(pitch=48, start=4.5, duration=0.5, velocity=110),
+    Note(pitch=55, start=5.5, duration=0.5, velocity=100),
+    Note(pitch=60, start=6.5, duration=1.0, velocity=100),
+]
+
+
+@tool()
+def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
+                    clip_index: Optional[int] = None, beats: float = 8.0,
+                    compare_to: Optional[str] = None):
+    """Hear a track: Ghost plays a phrase on it (soloed), records the result inside Live through
+    Resampling, measures it (low end per band, brightness, pitch, grit, movement/beating, stereo
+    width, attack/sustain) and returns a spectrogram picture. Use after shaping a sound to check
+    it. notes: the phrase to play (default: one long C2 then three short notes; use low notes
+    like 36 for bass, chords for pads). clip_index: play an existing clip instead.
+    compare_to: a reference audio file path (e.g. from search_samples) or 'last' for the
+    previous listen. Note: this stops Live's playback while it records."""
+    if clip_index is None and not notes:
+        notes = DEFAULT_PHRASE
+    start = live.send("start_audition", track_index=track_index, beats=beats,
+                      notes=[n.model_dump() for n in notes] if notes else None, clip_index=clip_index)
+    try:
+        time.sleep(start["wait_seconds"])
+        for _ in range(40):
+            r = live.send("finish_audition")
+            if r.get("done"):
+                break
+            time.sleep(0.5)
+        else:
+            raise LiveError("the recording didn't finish - is Live's transport running?")
+        if not r.get("file"):
+            raise LiveError(r.get("error") or "Live didn't report a recorded file")
+        _wait_for_file(r["file"])
+        LISTEN_DIR.mkdir(parents=True, exist_ok=True)
+        dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_track{track_index}.wav"
+        shutil.copy2(r["file"], dest)
+    finally:
+        try:
+            live.send("end_audition")
+        except LiveError:
+            pass
+    return _report(str(dest), f"Track {track_index}", compare_to)
+
+
+@tool()
+def analyze_audio_file(path: str, compare_to: Optional[str] = None):
+    """Hear any audio file: a sample from the user's library (search_samples), a bounce, or a
+    reference. Returns the same measurements and spectrogram as listen_to_track. Use it on a
+    reference sound first, then listen_to_track(..., compare_to=<that path>) to match it."""
+    if not Path(path).is_file():
+        raise LiveError(f"file not found: {path}")
+    return _report(path, Path(path).name, compare_to)
 
 
 # ---- the user's own library (from indexer.py) ----------------------------------
