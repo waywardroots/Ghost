@@ -320,6 +320,43 @@ def get_arrangement_info() -> dict:
     return live.send("get_arrangement_info")
 
 
+def _at_playhead(beat: float, **kw) -> dict:
+    live.send("set_song_time", beat=beat)
+    for _ in range(30):  # Live applies the new playhead position on its next update
+        time.sleep(0.12)
+        r = live.send("cue_at_playhead", expect_beat=beat, **kw)
+        if r.get("ready"):
+            return r
+    raise LiveError(f"Live's playhead didn't move to beat {beat}; is a dialog open in Live?")
+
+
+def _place_locators(items: list[tuple[float, str]], remove_existing: bool = False) -> list:
+    if remove_existing:
+        for cue in live.send("get_locators"):
+            _at_playhead(cue["beat"], delete=True)
+    for beat, name in items:
+        r = _at_playhead(beat, name=name)
+        if r.get("error"):
+            raise LiveError(r["error"])
+    live.send("set_song_time", beat=items[0][0] if items else 0.0)
+    return live.send("get_locators")
+
+
+class Locator(BaseModel):
+    bar: float = Field(description="bar number where the locator goes (1 = start of the song)")
+    name: str
+
+
+@tool()
+def set_locators(locators: list[Locator], remove_existing: bool = False) -> list:
+    """Add or rename Arrangement locators (section markers). remove_existing=true first deletes
+    every current locator - only do that when the user agrees or Ghost made them."""
+    info = live.send("get_session_info")
+    num, den = (int(x) for x in info["time_signature"].split("/"))
+    bpb = num * 4.0 / den
+    return _place_locators([((l.bar - 1) * bpb, l.name) for l in locators], remove_existing)
+
+
 @tool()
 def build_arrangement(sections: list[Section], start_bar: Optional[int] = None) -> dict:
     """Write a song structure into the Arrangement view: each section's Session clips are copied
@@ -327,8 +364,13 @@ def build_arrangement(sections: list[Section], start_bar: Optional[int] = None) 
     By default it starts after anything already in the Arrangement, so existing work is kept.
     Plan sections in multiples of 4 or 8 bars. Before running it, ask the user to save the set
     (each placed clip is its own undo step). Afterwards tell them to press Tab for Arrangement view."""
-    return live.send("build_arrangement", sections=[s.model_dump() for s in sections],
-                     start_bar=start_bar)
+    r = live.send("build_arrangement", sections=[s.model_dump() for s in sections],
+                  start_bar=start_bar)
+    try:
+        r["locators"] = _place_locators([(sec["start_beat"], sec["section"]) for sec in r["sections"]])
+    except LiveError as e:
+        r["locator_problem"] = str(e)
+    return r
 
 
 # ---- devices, plugins, samples -----------------------------------------------

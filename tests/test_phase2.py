@@ -240,6 +240,13 @@ def main():
         check("next build goes after existing work", r2["sections"][0]["start_bar"] == 25)
         info = ms.get_arrangement_info()
         check("arrangement info", info["length_bars"] == 28 and [l["name"] for l in info["locators"]] == ["Intro", "Drop", "Outro"])
+        # fix up locators: wrong ones removed, right ones placed
+        song.cue_points.append(fake_live.types.SimpleNamespace(time=60.0, name="9"))
+        locs = ms.set_locators([ms.Locator(bar=1, name="Intro"), ms.Locator(bar=9, name="Drop")],
+                               remove_existing=True)
+        check("set_locators replaces wrong ones", [(l["bar"], l["name"]) for l in locs] == [(1, "Intro"), (9, "Drop")])
+        locs = ms.set_locators([ms.Locator(bar=9, name="Drop!")])
+        check("set_locators renames in place", [(l["bar"], l["name"]) for l in locs] == [(1, "Intro"), (9, "Drop!")])
 
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")

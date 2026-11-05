@@ -533,9 +533,8 @@ class CommandHandler(object):
                 for k in range(reps):
                     track.duplicate_clip_to_arrangement(clip, t0 + k * length)
                     placed += 1
-            self._locator(t0, name)
             out.append({"section": name, "start_bar": int(round(t0 / bpb)) + 1,
-                        "bars": beats / bpb, "tracks": len(items)})
+                        "start_beat": t0, "bars": beats / bpb, "tracks": len(items)})
             t0 += beats
         try:
             song.current_song_time = start
@@ -544,18 +543,42 @@ class CommandHandler(object):
         return {"sections": out, "clips_placed": placed,
                 "end_bar": int(round(t0 / bpb)) + 1, "length_bars": (t0 - start) / bpb}
 
-    def _locator(self, time, name):
+    # Locators: Live moves the playhead a moment after it's set, so placing a locator takes
+    # two steps (set_song_time, then cue_at_playhead once the playhead has arrived).
+    def cmd_set_song_time(self, beat):
+        self.song.current_song_time = max(0.0, float(beat))
+        return {"requested_beat": float(beat)}
+
+    def _cue_at(self, beat):
+        for c in self.song.cue_points:
+            if abs(float(c.time) - beat) < 1e-3:
+                return c
+        return None
+
+    def cmd_cue_at_playhead(self, expect_beat, name=None, delete=False):
         song = self.song
-        try:
-            existing = [c for c in song.cue_points if abs(float(c.time) - time) < 1e-6]
-            if not existing:
-                song.current_song_time = time
+        now = float(song.current_song_time)
+        if abs(now - float(expect_beat)) > 1e-3:
+            return {"ready": False, "playhead_beat": now}
+        cue = self._cue_at(now)
+        if delete:
+            if cue is not None:
                 song.set_or_delete_cue()
-                existing = [c for c in song.cue_points if abs(float(c.time) - time) < 1e-6]
-            if existing:
-                existing[0].name = name
-        except Exception as e:
-            self.log("Ghost: couldn't add locator '%s': %s" % (name, e))
+            return {"ready": True, "deleted": cue is not None}
+        created = cue is None
+        if created:
+            song.set_or_delete_cue()
+            cue = self._cue_at(now)
+        if cue is None:
+            return {"ready": True, "error": "Live didn't create the locator"}
+        if name:
+            cue.name = name
+        return {"ready": True, "created": created, "name": cue.name}
+
+    def cmd_get_locators(self):
+        bpb = self._beats_per_bar()
+        return [{"name": c.name, "beat": float(c.time), "bar": round(float(c.time) / bpb + 1, 3)}
+                for c in sorted(self.song.cue_points, key=lambda c: float(c.time))]
 
     # ------------------------------------------------------------------ listening
     # Ghost records a track through Live's "Resampling" input so it can analyze the result.

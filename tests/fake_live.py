@@ -214,14 +214,28 @@ class Song:
         self.view = types.SimpleNamespace(selected_track=None, highlighted_clip_slot=None)
         self.undo_count = 0
         self.cue_points = []
-        self.current_song_time = 0.0
+        self._song_time = 0.0
+        self._pending_time = None
+
+    @property
+    def current_song_time(self):
+        return self._song_time
+
+    @current_song_time.setter
+    def current_song_time(self, v):
+        self._pending_time = float(v)  # applied on the next tick, like real Live
+
+    def _tick(self):
+        if self._pending_time is not None:
+            self._song_time, self._pending_time = self._pending_time, None
 
     def set_or_delete_cue(self):
-        hit = [c for c in self.cue_points if c.time == self.current_song_time]
+        hit = [c for c in self.cue_points if c.time == self._song_time]
         if hit:
             self.cue_points.remove(hit[0])
         else:
-            self.cue_points.append(types.SimpleNamespace(time=self.current_song_time, name=""))
+            self.cue_points.append(types.SimpleNamespace(time=self._song_time,
+                                                         name=str(len(self.cue_points) + 1)))
 
     def _new(self, kind, index):
         t = Track(kind, "%d-%s" % (len(self.tracks) + 1, "MIDI" if kind == "midi" else "Audio"),
@@ -361,7 +375,7 @@ def install_fake_modules():
             self._c.log.append("SHOW: " + msg)
 
         def update_display(self):
-            pass
+            self._c.song._tick()
 
         def disconnect(self):
             pass
