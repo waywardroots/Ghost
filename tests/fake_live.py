@@ -203,6 +203,9 @@ class Track:
         c = Clip(4.0, is_midi=False, name=os.path.basename(path))
         self.duplicate_clip_to_arrangement(c, time)
 
+    def delete_clip(self, clip):
+        self.arrangement_clips.remove(clip)
+
     def duplicate_clip_to_arrangement(self, clip, time):
         if not hasattr(self, "arrangement_clips"):
             self.arrangement_clips = []

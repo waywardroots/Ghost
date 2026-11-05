@@ -340,6 +340,30 @@ def get_arrangement_info() -> dict:
 
 
 @tool()
+def clear_arrangement(track_indices: list[int], from_bar: float = 1,
+                      to_bar: Optional[float] = None) -> dict:
+    """Delete Arrangement clips on the listed tracks between from_bar and to_bar (exclusive;
+    omit to_bar for 'to the end'). Session clips are kept. Use before rebuilding a structure;
+    leave out tracks whose arrangement the user wants to keep. Ask the user to save first."""
+    return live.send("clear_arrangement", track_indices=track_indices, from_bar=from_bar,
+                     to_bar=to_bar)
+
+
+@tool()
+def read_project_arrangement(path: str) -> dict:
+    """Map the arrangement of any of the user's Ableton sets (.als) without opening it: tempo,
+    length, locators, every track's bar ranges, and an 8-bar energy map. Use it to model a new
+    song's structure on one of their finished songs (find files with the user's project folders)."""
+    import arrangement_map
+    try:
+        info = arrangement_map.read_arrangement(path)
+    except (ValueError, OSError) as e:
+        return {"error": str(e)}
+    info["energy"] = arrangement_map.sections_by_density(info)
+    return info
+
+
+@tool()
 def get_drum_pads(track_index: int) -> dict:
     """Which sound is on which MIDI note in a track's Drum Rack (e.g. to write a snare roll)."""
     return live.send("get_drum_pads", track_index=track_index)

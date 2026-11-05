@@ -544,6 +544,25 @@ class CommandHandler(object):
                 "end_bar": int(round(t0 / bpb)) + 1, "length_bars": (t0 - start) / bpb}
 
     # ---- arrangement editing
+    def cmd_clear_arrangement(self, track_indices, from_bar=1, to_bar=None):
+        """Delete Arrangement clips on the given tracks that overlap bars from_bar..to_bar
+        (to_bar exclusive; None = to the end). Session clips are never touched."""
+        bpb = self._beats_per_bar()
+        t0 = (float(from_bar) - 1) * bpb
+        t1 = None if to_bar is None else (float(to_bar) - 1) * bpb
+        removed = 0
+        for ti in track_indices:
+            track = self._track(ti)
+            if not hasattr(track, "delete_clip"):
+                raise CommandError("this version of Live can't delete Arrangement clips from a "
+                                   "script (needs Live 12)")
+            for c in list(getattr(track, "arrangement_clips", []) or []):
+                s, e = float(c.start_time), float(c.end_time)
+                if e > t0 + 1e-9 and (t1 is None or s < t1 - 1e-9):
+                    track.delete_clip(c)
+                    removed += 1
+        return {"removed": removed}
+
     def cmd_get_drum_pads(self, track_index):
         """Which sounds sit on which notes in a track's Drum Rack."""
         track = self._track(track_index)

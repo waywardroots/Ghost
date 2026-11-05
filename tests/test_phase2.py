@@ -288,6 +288,17 @@ def main():
         expect_error("bad unit explained", ms.automate, bass, 0, "Filter Cutoff",
                      [P(bar=9, value="3 dB"), P(bar=13, value="1 kHz")], contains="not db")
 
+        # ---- clearing the arrangement ----
+        n_before = len(song.tracks[drums].arrangement_clips)
+        r = ms.clear_arrangement([drums], from_bar=9, to_bar=13)
+        left = song.tracks[drums].arrangement_clips
+        check("clear a range", r["removed"] == 4 and len(left) == n_before - 4
+              and not any(c.start_time < 48 and c.end_time > 32 for c in left))
+        r = ms.clear_arrangement([drums, bass])
+        check("clear whole tracks, others untouched", not song.tracks[drums].arrangement_clips
+              and not song.tracks[bass].arrangement_clips and song.tracks[vox].arrangement_clips)
+        check("session clips kept", song.tracks[bass].clip_slots[0].has_clip)
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)
