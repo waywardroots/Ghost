@@ -126,8 +126,8 @@ Sound design:
 - If a plugin shows a 'hint' about Configure, relay it: the user has to expose that plugin's
   controls to Live once before you can shape it.
 - save_sound_snapshot before big changes and for each variation, so the user can compare and go back.
-- For u-he synths (Diva, Hive, Repro-1, Repro-5) you can also write complete presets as files:
-  find_preset_files (prefer an init patch or the user's own presets), read_preset_file to learn
+- For Serum 2 and u-he synths (Diva, Hive, Repro-1, Repro-5) you can also write complete presets:
+  find_preset_files (Serum 2 and u-he; prefer an init patch or the user's own presets), read_preset_file to learn
   the layout, then write_preset_file. Ghost can't save presets for other plugins; tell the user
   to save from the plugin or with Live's Save Preset button when they like a sound."""
 
@@ -394,7 +394,7 @@ def list_sound_snapshots() -> list:
             for k, v in _load_snaps().items()]
 
 
-# ---- preset files (u-he Diva, Hive, Repro-1, Repro-5) --------------------------
+# ---- preset files (Serum 2, u-he Diva, Hive, Repro-1, Repro-5) ----------------
 def _presets_call(fn, *a, **kw):
     try:
         return fn(*a, **kw)
@@ -404,7 +404,7 @@ def _presets_call(fn, *a, **kw):
 
 @tool()
 def find_preset_files(synth: str = "", query: str = "", limit: int = 40) -> list:
-    """Find preset files Ghost can read and write: u-he synths (Diva, Hive, Repro-1, Repro-5).
+    """Find preset files Ghost can read and write: Serum 2 and u-he (Diva, Hive, Repro-1, Repro-5).
     query matches words in the name or folder (e.g. 'init', 'bass', 'pad'). The user's own
     presets are listed first."""
     return _presets_call(presets.find_presets, synth, query, limit)
@@ -412,17 +412,18 @@ def find_preset_files(synth: str = "", query: str = "", limit: int = 40) -> list
 
 @tool()
 def read_preset_file(path: str) -> dict:
-    """Read every setting in a u-he preset, grouped by section (oscillators, filters,
-    envelopes...). Use it to learn a preset's layout before writing a new one."""
+    """Read every setting in a Serum 2 or u-he preset (u-he: grouped by section; Serum 2: paths like
+    Oscillator0/plainParams/kParamDetune). Learn the layout before writing a new one."""
     return _presets_call(presets.read_preset, path)
 
 
 @tool()
 def write_preset_file(template_path: str, name: str, changes: dict[str, float | str],
                       description: str = "") -> dict:
-    """Make a new u-he preset: copy template_path (an init patch, factory or user preset),
+    """Make a new Serum 2 or u-he preset: copy template_path (an init patch, factory or user preset),
     change settings, and save it as a new preset in the synth's 'Ghost' folder. The template
-    is never modified. changes keys are 'Section:Param' (or 'Param' when unique), using names
+    is never modified. changes keys: u-he 'Section:Param' (or 'Param' if unique); Serum 2 the full
+    setting path. Use names
     and value scales exactly as read_preset_file shows them. The user then picks it in the
     synth's own preset browser (folder 'Ghost'; refresh the browser if needed)."""
     return _presets_call(presets.write_preset, template_path, name, changes, description)

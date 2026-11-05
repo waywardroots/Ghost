@@ -83,8 +83,8 @@ Ask for sounds in plain words: *"Load Serum on a new track and make a dark detun
 
 - **Any plugin or Live device:** Ghost reads its controls and sets them in real units (`800 Hz`, `35 ms`, `-6 dB`, `Saw`). Many settings can change in one step.
 - **Snapshots:** Ghost saves versions of a sound (A, B, C...) so you can compare them and go back. They're kept in `MusicAssistant\snapshots.json`.
-- **u-he Diva, Hive, Repro-1, Repro-5:** Ghost can write complete presets as files. It starts from a factory/init patch or one of yours and saves the result to a `Ghost` folder in that synth's preset browser. Originals are never changed.
-- **Big plugins** (Serum 2, Pigments, Omnisphere, Spire...) only share the controls you expose. Do it once per plugin: open it in Live, click **Configure** (wrench icon), move the knobs you want Ghost to use (up to 128), then click Configure again. Saving the plugin as a Live preset afterwards keeps that setup.
+- **Serum 2 and u-he Diva, Hive, Repro-1, Repro-5:** Ghost can write complete presets as files. It starts from a factory/init patch or one of yours and saves the result to a `Ghost` folder in that synth's preset browser (Serum 2: `Presets\User\Ghost`; u-he: `UserPresets\<Synth>\Ghost`). Originals are never changed. Serum 2 only stores settings that differ from default, so Ghost can change what a preset already uses, plus settings that a matching part of the preset uses (e.g. detune on oscillator B when oscillator A has it).
+- **Big plugins** (Serum 2 live tweaking, Pigments, Omnisphere, Spire...) only share the controls you expose. Do it once per plugin: open it in Live, click **Configure** (wrench icon), move the knobs you want Ghost to use (up to 128), then click Configure again. Saving the plugin as a Live preset afterwards keeps that setup.
 - To keep a sound from other plugins, save it in the plugin or with Live's Save Preset button. Ghost can't write their preset files.
 
 ### Good to know
@@ -97,4 +97,4 @@ Ask for sounds in plain words: *"Load Serum on a new track and make a dark detun
 python tests/test_phase2.py
 python tests/test_presets.py
 ```
-Runs the full chain against a simulated Live, plus preset-file tests (80 checks).
+Runs the full chain against a simulated Live, plus preset-file tests (96 checks).

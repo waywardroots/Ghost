@@ -1,8 +1,10 @@
 """
 Preset files Ghost can read and write directly.
 
-Supported now: u-he synths (Diva, Hive, Repro-1, Repro-5 and other u-he plugins),
-whose .h2p presets are plain text:
+Supported now:
+- Serum 2 (.SerumPreset; see serum2.py)
+- u-he synths (Diva, Hive, Repro-1, Repro-5 and other u-he plugins), whose .h2p
+  presets are plain text:
 
     /*@Meta  ... Author / Description ... */
     #AM=Diva
@@ -24,7 +26,10 @@ import os
 import re
 from pathlib import Path
 
+import serum2
+
 PRESET_EXT = ".h2p"
+SERUM_EXT = ".serumpreset"
 BINARY_MARK = "// Section for ugly compressed binary Data"
 MAX_FILES = 60000
 GHOST_FOLDER = "Ghost"
@@ -48,7 +53,8 @@ def preset_roots() -> list[Path]:
     home = Path.home()
     cands = [home / "Documents" / "u-he",                        # Windows (current installers)
              home / "Library" / "Audio" / "Presets" / "u-he",    # macOS
-             Path("/Library/Audio/Presets/u-he")]
+             Path("/Library/Audio/Presets/u-he"),
+             home / "Documents" / "Xfer" / "Serum 2 Presets"]   # Serum 2 (Windows and macOS)
     for var, sub in (("CommonProgramFiles", "VST3"), ("CommonProgramFiles", "VST2"),
                      ("ProgramFiles", "VSTPlugins"), ("ProgramFiles", "Steinberg/VSTPlugins")):
         base = os.environ.get(var)
@@ -67,29 +73,55 @@ def _synth_from_text(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _data_dir(path: Path):
+    """For a u-he preset: (<Synth>.data folder, synth name, 'Presets'/'UserPresets').
+    Some synths share a folder (Repro-5 lives in Repro-1.data/Presets/Repro-5)."""
+    parts = path.parts
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower().endswith(".data"):
+            if i + 2 < len(parts) and parts[i + 1].lower() in ("presets", "userpresets"):
+                return Path(*parts[: i + 1]), parts[i + 2], parts[i + 1]
+            return Path(*parts[: i + 1]), parts[i][:-5], None
+    return None, None, None
+
+
 def _synth_from_path(path: Path) -> str | None:
-    for part in reversed(path.parts[:-1]):
-        if part.lower().endswith(".data"):
-            return part[:-5]
+    if path.suffix.lower() == SERUM_EXT:
+        return "Serum 2"
+    _, synth, _ = _data_dir(path)
+    if synth:
+        return synth
+    for anc in path.parents:  # macOS: .../Presets/u-he/<Synth>/...
+        if anc.parent.name.lower() == "u-he":
+            return anc.name
     return path.parent.name if path.parent else None
 
 
+def _is_preset(p: Path) -> bool:
+    return p.suffix.lower() in (PRESET_EXT, SERUM_EXT)
+
+
 def find_presets(synth: str = "", query: str = "", limit: int = 40) -> list[dict]:
-    synth_q, words = synth.lower().strip(), query.lower().split()
+    squash = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())  # "Repro 5" == "repro-5"
+    synth_q, words = squash(synth), query.lower().split()
     hits, scanned = [], 0
     for root in preset_roots():
-        for p in root.rglob("*" + PRESET_EXT):
+        for p in root.rglob("*"):
+            if not _is_preset(p):
+                continue
             scanned += 1
             if scanned > MAX_FILES:
                 break
             path_l = str(p).lower()
-            if synth_q and synth_q not in path_l:
+            name = _synth_from_path(p) or ""
+            if synth_q and synth_q not in squash(name):
                 continue
             if words and not all(w in path_l for w in words):
                 continue
-            hits.append({"name": p.stem, "synth": _synth_from_path(p), "path": str(p),
-                         "yours": any(x in path_l for x in ("userpresets", "user presets",
-                                                            os.sep + "local" + os.sep)),
+            seps = (os.sep, "/")
+            yours = ("userpresets" in path_l or "user presets" in path_l
+                     or any(f"{s}user{s}" in path_l for s in seps) or p.parent.name == GHOST_FOLDER)
+            hits.append({"name": p.stem, "synth": name, "path": str(p), "yours": yours,
                          "made_by_ghost": p.parent.name == GHOST_FOLDER})
     hits.sort(key=lambda h: (not h["yours"], h["name"].lower()))
     return hits[: max(1, min(int(limit), 300))]
@@ -127,10 +159,27 @@ def parse(text: str) -> dict:
     return {"synth": _synth_from_text(head), "meta": meta, "sections": sections}
 
 
+def _read_serum(p: Path) -> dict:
+    try:
+        meta, body = serum2.load(p.read_bytes())
+    except serum2.SerumError as e:
+        raise PresetError(str(e)) from e
+    flat = {k: v for k, v in serum2.flatten(body).items()
+            if not (v == "default" and k.endswith("plainParams"))}
+    meta = {k: v for k, v in meta.items() if k != "hash"}
+    return {"name": p.stem, "path": str(p), "synth": "Serum 2", "meta": meta,
+            "settings": flat, "parameter_count": len(flat),
+            "note": "Sections set to 'default' are left out; they use Serum's defaults and can't "
+                    "be edited from this preset. Pick a template that already uses the parts you "
+                    "want to change."}
+
+
 def read_preset(path: str) -> dict:
     p = Path(path)
-    if p.suffix.lower() != PRESET_EXT or not p.is_file():
-        raise PresetError(f"not a .h2p preset file: {path}")
+    if not p.is_file() or not _is_preset(p):
+        raise PresetError(f"not a supported preset file (.h2p or .SerumPreset): {path}")
+    if p.suffix.lower() == SERUM_EXT:
+        return _read_serum(p)
     info = parse(p.read_text(encoding="utf-8", errors="replace"))
     info["name"], info["path"] = p.stem, str(p)
     info["synth"] = info["synth"] or _synth_from_path(p)
@@ -179,16 +228,52 @@ def _meta_block(meta: dict, eol: str = "\n") -> str:
 
 
 def _dest_folder(template: Path) -> Path:
+    if template.suffix.lower() == SERUM_EXT:
+        # .../Serum 2 Presets/Presets/User/Ghost (Serum's own place for user presets)
+        for anc in template.parents:
+            if anc.name.lower() == "presets" and anc.parent.name.lower() == "serum 2 presets":
+                return anc / "User" / GHOST_FOLDER
+        return template.parent / GHOST_FOLDER
+    data, synth, _ = _data_dir(template)
+    if data is not None and synth:
+        if (data / "UserPresets").exists():
+            return data / "UserPresets" / synth / GHOST_FOLDER
+        return data / "Presets" / synth / GHOST_FOLDER
     for anc in template.parents:
-        if anc.name.lower().endswith(".data"):
-            synth = anc.name[:-5]
-            for sub in ("UserPresets", "Presets"):
-                root = anc / sub / synth
-                if root.exists():
-                    return root / GHOST_FOLDER
         if anc.parent.name.lower() == "u-he":  # macOS layout
             return anc / GHOST_FOLDER
     return template.parent / GHOST_FOLDER
+
+
+def _write_serum(tpl: Path, name: str, changes: dict, description: str, dest_folder) -> dict:
+    try:
+        meta, body = serum2.load(tpl.read_bytes())
+        applied = []
+        for key, value in (changes or {}).items():  # all-or-nothing: body is a fresh copy
+            path = key.strip().strip("/")
+            try:
+                old, new = serum2.set_path(body, path, value)
+            except serum2.SerumError as e:
+                if "isn't in this preset" not in str(e):
+                    raise
+                old, new = serum2.add_known(body, path, value)
+            applied.append({"parameter": key, "from": "default" if old is None else old, "to": new})
+        meta["presetName"] = _safe_name(name)
+        meta["presetAuthor"] = "Ghost"
+        meta["presetDescription"] = (description or f"Made by Ghost from '{tpl.stem}'").strip()
+        data = serum2.dump(meta, body)
+    except serum2.SerumError as e:
+        raise PresetError(str(e)) from e
+    folder = Path(dest_folder) if dest_folder else _dest_folder(tpl)
+    if folder.name != GHOST_FOLDER:
+        folder = folder / GHOST_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / (_safe_name(name) + tpl.suffix)
+    if dest.resolve() == tpl.resolve():
+        raise PresetError("refusing to overwrite the template")
+    dest.write_bytes(data)
+    return {"saved": str(dest), "name": dest.stem, "synth": "Serum 2", "template": tpl.stem,
+            "changed": applied}
 
 
 def _safe_name(name: str) -> str:
@@ -201,8 +286,10 @@ def _safe_name(name: str) -> str:
 def write_preset(template_path: str, name: str, changes: dict, description: str = "",
                  dest_folder: str | None = None) -> dict:
     tpl = Path(template_path)
-    if tpl.suffix.lower() != PRESET_EXT or not tpl.is_file():
-        raise PresetError(f"template is not a .h2p preset: {template_path}")
+    if not tpl.is_file() or not _is_preset(tpl):
+        raise PresetError(f"template is not a .h2p or .SerumPreset preset: {template_path}")
+    if tpl.suffix.lower() == SERUM_EXT:
+        return _write_serum(tpl, name, changes, description, dest_folder)
     text = tpl.read_bytes().decode("utf-8", errors="replace")  # keep CRLF/LF exactly
     head, tail = _split(text)
     sections = parse(text)["sections"]

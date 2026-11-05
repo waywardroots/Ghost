@@ -65,6 +65,61 @@ r2 = presets.write_preset(str(root / "Hive.data" / "Presets" / "Hive" / "Pad.h2p
 check("no UserPresets -> Presets/Ghost, unsafe chars removed",
       Path(r2["saved"]) == root / "Hive.data" / "Presets" / "Hive" / "Ghost" / "Soft Pad.h2p")
 
+# Repro-5 lives inside Repro-1.data (as on a real install)
+r5dir = root / "Repro-1.data" / "Presets" / "Repro-5"; r5dir.mkdir(parents=True)
+(root / "Repro-1.data" / "UserPresets").mkdir(parents=True)
+(r5dir / "Deep.h2p").write_bytes(SAMPLE.replace("Diva", "Repro-5").encode())
+check("Repro-5 detected inside Repro-1 folder", [f["synth"] for f in presets.find_presets("repro 5")] == ["Repro-5"])
+check("Repro-1 search doesn't return Repro-5", presets.find_presets("repro-1") == [])
+r5 = presets.write_preset(str(r5dir / "Deep.h2p"), "R5 Test", {"Freq": 70})
+check("Repro-5 saved to its own user folder",
+      Path(r5["saved"]) == root / "Repro-1.data" / "UserPresets" / "Repro-5" / "Ghost" / "R5 Test.h2p")
+
+# Serum 2 (synthetic preset built with the same layout as real ones)
+import serum2
+F32, F64 = serum2.F32, serum2.F64
+body = {"Env0": {"plainParams": {"kParamAttack": F64(0.001), "kParamRelease": F64(0.1)}},
+        "Macro0": {"name": "DETUNE", "plainParams": {"kParamValue": F64(16.0)}},
+        "Macro1": {"name": "WIDTH", "plainParams": "default"},
+        "Oscillator0": {"plainParams": {"kParamDetune": F64(0.14), "kParamDetuneMode": "kDetuneExp",
+                                        "kParamOctave": F64(-2.0)}},
+        "Oscillator1": {"plainParams": {"kParamOctave": F64(-2.0)}},
+        "ClipPlayer": {"kUIParamPreview": F32(1.0), "active": [0, 1], "big": list(range(100))},
+        "Wave": {"data": b"\x00\x01" * 50}, "flag": True, "none": None}
+raw = serum2.cbor_dumps(body)
+check("CBOR round-trip keeps number widths", serum2.cbor_dumps(serum2.cbor_loads(raw)) == raw)
+meta = {"fileType": "SerumPreset", "presetAuthor": "Factory", "presetName": "Base", "product": "Serum2"}
+sdir = Path(tempfile.mkdtemp()) / "Serum 2 Presets" / "Presets"
+(sdir / "Factory").mkdir(parents=True); (sdir / "User").mkdir()
+spath = sdir / "Factory" / "Base.SerumPreset"; spath.write_bytes(serum2.dump(meta, body))
+os.environ["GHOST_PRESET_DIRS"] = str(sdir.parent)
+check("find Serum 2 presets", [f["synth"] for f in presets.find_presets("serum")] == ["Serum 2"])
+info = presets.read_preset(str(spath))
+check("read Serum 2 settings", info["settings"]["Env0/plainParams/kParamAttack"] == 0.001
+      and "Macro1/plainParams" not in info["settings"] and "hash" not in info["meta"])
+r = presets.write_preset(str(spath), "Ghost Reese", {"Env0/plainParams/kParamAttack": 0.2,
+                          "Oscillator1/plainParams/kParamDetune": 0.3,        # known from Oscillator0
+                          "Macro1/plainParams/kParamValue": 50,                # 'default' part gets settings
+                          "Oscillator0/plainParams/kParamDetuneMode": "kDetuneLinear"}, "wide")
+out = Path(r["saved"])
+check("Serum 2 saved to Presets/User/Ghost", out == sdir / "User" / "Ghost" / "Ghost Reese.SerumPreset")
+m2, b2 = serum2.load(out.read_bytes())
+import hashlib, struct
+n = struct.unpack("<Q", out.read_bytes()[9:17])[0]
+check("hash matches compressed body", m2["hash"] == hashlib.md5(out.read_bytes()[17 + n + 8:]).hexdigest())
+check("Serum 2 values written", b2["Env0"]["plainParams"]["kParamAttack"] == 0.2
+      and b2["Oscillator1"]["plainParams"]["kParamDetune"] == 0.3
+      and b2["Macro1"]["plainParams"] == {"kParamValue": 50.0}
+      and b2["Oscillator0"]["plainParams"]["kParamDetuneMode"] == "kDetuneLinear")
+check("untouched data preserved", b2["Wave"] == body["Wave"] and b2["ClipPlayer"] == body["ClipPlayer"])
+check("Serum 2 name/author updated", m2["presetName"] == "Ghost Reese" and m2["presetAuthor"] == "Ghost")
+check("Serum 2 template untouched", serum2.load(spath.read_bytes())[1] == body)
+for bad, why in (({"Oscillator0/plainParams/kParamMadeUp": 1}, "no matching part"),
+                 ({"Oscillator0/plainParams/kParamDetuneMode": 3}, "named option"),
+                 ({"Env0/plainParams/kParamAttack": "slow"}, "needs a number")):
+    raises("Serum 2 refuses " + why, lambda b=bad: presets.write_preset(str(spath), "bad", b), why)
+check("nothing written on Serum error", not (sdir / "User" / "Ghost" / "bad.SerumPreset").exists())
+
 # Fallback for plugins that only report their current value (no str_for_value)
 class OnlyCurrent(fake_live.ShownParam):
     def str_for_value(self, v):
