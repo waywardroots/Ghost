@@ -159,6 +159,11 @@ def tool():
                 return fn(*a, **kw)
             except (LiveError, presets.PresetError) as e:
                 return {"error": str(e)}
+            except Exception as e:  # never fail silently: say what broke
+                import traceback
+                where = traceback.extract_tb(e.__traceback__)[-1]
+                return {"error": f"{type(e).__name__}: {e}",
+                        "where": f"{Path(where.filename).name}:{where.lineno}"}
         return server.tool()(inner)
     return wrap
 
@@ -512,16 +517,106 @@ def set_device_parameters(track_index: int, device_index: int,
                           settings: list[ParamSetting]) -> dict:
     """Shape a sound: set many parameters on one device at once. Settings that fail are listed
     in 'errors' while the rest still apply. Each result shows the new display value."""
-    return live.send("set_device_parameters", track_index=track_index, device_index=device_index,
-                     settings=[s.model_dump() for s in settings])
+    r = live.send("set_device_parameters", track_index=track_index, device_index=device_index,
+                  settings=[s.model_dump() for s in settings])
+    still = []
+    for err in r.get("errors", []):
+        if not str(err.get("error", "")).startswith("NEEDS_CALIBRATION"):
+            still.append(err)
+            continue
+        want = next(s.value for s in settings if s.parameter == err["parameter"])
+        try:
+            r["set"].append(_calibrate(track_index, device_index, err["parameter"], want))
+        except LiveError as e:
+            still.append({"parameter": err["parameter"], "error": str(e)})
+    r["errors"] = still
+    return r
+
+
+def _param_tools():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ghost_params", Path(__file__).resolve().parent / "ableton" / "Ghost" / "params.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _calibrate(track_index: int, device_index: int, parameter: str, want, settle: float = 0.15):
+    """Reach a display value ('2 kHz', '3 s', 'N') on a plugin that only updates its display
+    after Live refreshes: set a raw value, wait, read the display back, and narrow in."""
+    pm = _param_tools()
+    info = live.send("get_device_parameters", track_index=track_index, device_index=device_index)
+    q = str(parameter).lower().strip()
+    matches = [p for p in info["parameters"] if p["name"].lower().strip() == q] or \
+        [p for p in info["parameters"] if q in p["name"].lower()]
+    if not matches:
+        raise LiveError(f"parameter '{parameter}' not found")
+    p0 = matches[0]
+    idx, lo, hi, original = p0["index"], p0["min"], p0["max"], p0["value"]
+
+    def show(v):
+        live.send("set_device_parameter", track_index=track_index, device_index=device_index,
+                  parameter=str(idx), value=float(v))
+        time.sleep(settle)
+        cur = live.send("get_device_parameters", track_index=track_index,
+                        device_index=device_index)["parameters"]
+        return next(x["display"] for x in cur if x["index"] == idx) or ""
+
+    def done(v):
+        text = show(v)
+        return {"parameter": p0["name"], "value": round(v, 6), "display": text.strip(),
+                "calibrated": True}
+
+    text = str(want).strip()
+    target = pm.parse_amount(text)
+    try:
+        if target is None:  # a named setting: step through the range
+            norm = lambda x: " ".join(x.lower().split())
+            for i in range(41):
+                v = lo + (hi - lo) * i / 40
+                if norm(show(v)) == norm(text):
+                    return done(v)
+            raise LiveError(f"couldn't find a setting of {p0['name']} that shows '{text}'")
+        amount, family = target
+        a, b = pm.parse_amount(show(lo)), pm.parse_amount(show(hi))
+        if a is None or b is None or a[0] == b[0]:
+            raise LiveError(f"{p0['name']} doesn't show numbers I can steer by; use a raw value")
+        shown = a[1] or b[1]
+        if family and shown and family != shown:
+            raise LiveError(f"{p0['name']} is shown in {shown}, not {family}")
+        up = b[0] > a[0]
+        if amount <= min(a[0], b[0]):
+            return done(lo if up else hi)
+        if amount >= max(a[0], b[0]):
+            return done(hi if up else lo)
+        l, h = lo, hi
+        for _ in range(16):
+            mid = (l + h) / 2
+            m = pm.parse_amount(show(mid))
+            if m is None:
+                break
+            if (m[0] < amount) == up:
+                l = mid
+            else:
+                h = mid
+        return done((l + h) / 2)
+    except LiveError:
+        show(original)  # put it back
+        raise
 
 
 @tool()
 def set_device_parameter(track_index: int, device_index: int, parameter: str,
                          value: float | str) -> dict:
     """Set one parameter. value: raw number, or display text like '800 Hz', '-6 dB', 'Saw'."""
-    return live.send("set_device_parameter", track_index=track_index,
-                     device_index=device_index, parameter=parameter, value=value)
+    r = set_device_parameters.__wrapped__(track_index, device_index,
+                                          [ParamSetting(parameter=parameter, value=value)])
+    if r["errors"]:
+        raise LiveError(r["errors"][0]["error"])
+    out = dict(r["set"][0])
+    out["device"] = r["device"]
+    return out
 
 
 # ---- sound snapshots (saved on disk, survive restarts) -------------------------
@@ -695,7 +790,14 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
         _wait_for_file(r["file"])
         LISTEN_DIR.mkdir(parents=True, exist_ok=True)
         dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_track{track_index}.wav"
-        shutil.copy2(r["file"], dest)
+        for attempt in range(12):  # Live may still hold the new recording open on Windows
+            try:
+                shutil.copyfile(r["file"], dest)
+                break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            dest = Path(r["file"])  # analyze it where Live saved it
     finally:
         try:
             live.send("end_audition")

@@ -104,4 +104,4 @@ Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's pla
 python tests/test_phase2.py
 python tests/test_presets.py
 ```
-Runs the full chain against a simulated Live, plus preset-file tests (135 checks).
+Runs the full chain against a simulated Live, plus preset-file tests (140 checks).

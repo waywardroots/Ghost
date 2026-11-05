@@ -120,17 +120,19 @@ for bad, why in (({"Oscillator0/plainParams/kParamMadeUp": 1}, "no matching part
     raises("Serum 2 refuses " + why, lambda b=bad: presets.write_preset(str(spath), "bad", b), why)
 check("nothing written on Serum error", not (sdir / "User" / "Ghost" / "bad.SerumPreset").exists())
 
-# Fallback for plugins that only report their current value (no str_for_value)
+# Plugins that only report their current value: never guessed in one step (the connector
+# calibrates them over several refreshes); the value must be left untouched.
 class OnlyCurrent(fake_live.ShownParam):
     def str_for_value(self, v):
         raise RuntimeError("not supported")
 p = OnlyCurrent("Cutoff", fake_live._hz, 0.3)
-res = gp.set_param(p, "1.2 kHz")
-check("fallback path sets real units", res["display"] in ("1.19 kHz", "1.20 kHz", "1.21 kHz"))
 try:
-    gp.set_param(p, "20 ms")
-except gp.ParamError:
-    check("fallback restores value after a failed set", str(p).startswith("1.2") or str(p).startswith("1.19"))
+    gp.set_param(p, "1.2 kHz")
+    raise AssertionError("FAILED: expected NEEDS_CALIBRATION")
+except gp.ParamError as e:
+    check("no one-step guessing on plugins that can't preview", str(e).startswith("NEEDS_CALIBRATION")
+          and p.value == 0.3)
+check("raw values still work there", gp.set_param(p, 0.5)["value"] == 0.5)
 check("parse thousands", gp.parse_amount("1,200 Hz") == (1200.0, "hz") and gp.parse_amount("-inf dB")[0] == float("-inf"))
 
 print("\n".join("PASS  " + x for x in PASSED)); print(f"\nAll {len(PASSED)} checks passed.")

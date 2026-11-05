@@ -304,6 +304,24 @@ def main():
               and not song.tracks[bass].arrangement_clips and song.tracks[vox].arrangement_clips)
         check("session clips kept", song.tracks[bass].clip_slots[0].has_clip)
 
+        # ---- old plugins whose display lags (VST2): calibrated, never pushed to extremes ----
+        song.tracks[vox].devices.append(fake_live.old_plugin())
+        dv = len(song.tracks[vox].devices) - 1
+        r = ms.set_device_parameters(vox, dv, [S(parameter="Decay", value="3 s"),
+                                                S(parameter="Style", value="N"),
+                                                S(parameter="Mix", value=0.3)])
+        got = {x["parameter"]: x for x in r["set"]}
+        check("lagging plugin: no errors", r["errors"] == [])
+        check("lagging plugin: time reached by calibration", got["Decay"].get("calibrated")
+              and abs(float(got["Decay"]["display"].split()[0]) - 3.0) < 0.1)
+        check("lagging plugin: named setting found", got["Style"]["display"] == "N")
+        check("lagging plugin: raw values still direct", got["Mix"]["value"] == 0.3)
+        before = song.tracks[vox].devices[dv].parameters[1].value
+        r = ms.set_device_parameters(vox, dv, [S(parameter="Decay", value="200 Hz")])
+        check("lagging plugin: wrong unit refused and value restored",
+              r["errors"] and "not hz" in r["errors"][0]["error"]
+              and abs(song.tracks[vox].devices[dv].parameters[1].value - before) < 1e-5)
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)

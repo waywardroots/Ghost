@@ -78,8 +78,11 @@ class _Reader(object):
     def text(self, v):
         if self.use_str_for_value:
             return self.p.str_for_value(v)
-        self.p.value = v  # fallback: set it and read the display back
-        return display(self.p)
+        # Many VST2 plugins can't preview a value's text, and only update their display on
+        # Live's next refresh, so set-and-read here would read stale text and drift to the
+        # wrong value. The connector calibrates these over several refreshes instead.
+        raise ParamError("NEEDS_CALIBRATION: %s can't preview values; it shows '%s' now"
+                         % (self.p.name, display(self.p)))
 
 
 def _clamp(p, v):

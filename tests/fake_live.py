@@ -55,6 +55,33 @@ def synth_params():
             ShownParam("Unison", lambda v: "%d" % int(round(v)), 1.0, 1.0, 16.0)]
 
 
+class LaggyParam(Param):
+    """Like many VST2 plugins: can't preview values, display updates on Live's next refresh."""
+
+    def __init__(self, name, fmt, value=0.5):
+        Param.__init__(self, name, value)
+        self._fmt = fmt
+        self._shown = fmt(value)
+
+    def str_for_value(self, v):
+        return self._shown  # VST2: only ever the current (possibly stale) text
+
+    def __str__(self):
+        return self._shown
+
+    def refresh(self):
+        self._shown = self._fmt(self.value)
+
+
+def old_plugin():
+    styles = "AENTP"
+    return Device("Old Verb", [Param("Device On", 1.0),
+                              LaggyParam("Decay", lambda v: "%.2f s " % (0.3 * (233.0 ** v))),
+                              LaggyParam("Style", lambda v: styles[min(4, int(v * 5))] + " ", 0.0),
+                              LaggyParam("Mix", lambda v: "%.1f %% " % (v * 100), 1.0)],
+                  class_name="PluginDevice")
+
+
 class Device:
     def __init__(self, name, params=("Device On", "Cutoff", "Resonance"), class_name=None):
         self.name = name
@@ -296,6 +323,11 @@ class Song:
     def _tick(self):
         if self._pending_time is not None:
             self._song_time, self._pending_time = self._pending_time, None
+        for t in self.tracks:
+            for d in t.devices:
+                for p in getattr(d, "parameters", []):
+                    if hasattr(p, "refresh"):
+                        p.refresh()
 
     def set_or_delete_cue(self):
         hit = [c for c in self.cue_points if c.time == self._song_time]
