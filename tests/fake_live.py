@@ -161,6 +161,10 @@ class ClipSlot:
             self.clip = c
 
 
+class _AudioTrackMixin:
+    pass
+
+
 class Routing:
     def __init__(self, name):
         self.display_name = name
@@ -185,11 +189,62 @@ class Track:
     def stop_all_clips(self):
         self.stopped += 1
 
+    def create_audio_clip(self, path, time):
+        assert self.has_audio_input, "audio clips only on audio tracks"
+        import os
+        assert os.path.isfile(path)
+        c = Clip(4.0, is_midi=False, name=os.path.basename(path))
+        self.duplicate_clip_to_arrangement(c, time)
+
     def duplicate_clip_to_arrangement(self, clip, time):
         if not hasattr(self, "arrangement_clips"):
             self.arrangement_clips = []
-        self.arrangement_clips.append(types.SimpleNamespace(
-            name=clip.name, start_time=float(time), end_time=float(time) + float(clip.length)))
+        t, length = float(time), float(clip.length)
+        # like Live: a new clip replaces whatever it covers on the timeline
+        self.arrangement_clips = [c for c in self.arrangement_clips
+                                  if c.end_time <= t or c.start_time >= t + length]
+        self.arrangement_clips.append(ArrClip(clip.name, t, length))
+        self.arrangement_clips.sort(key=lambda c: c.start_time)
+
+
+class Envelope:
+    def __init__(self):
+        self.steps = []
+
+    def insert_step(self, time, length, value):
+        self.steps.append((time, length, value))
+
+    def value_at(self, t):
+        hit = [v for (a, ln, v) in self.steps if a <= t < a + ln]
+        return hit[-1] if hit else None
+
+
+class ArrClip:
+    def __init__(self, name, start, length):
+        self.name, self.start_time, self.end_time = name, start, start + length
+        self.start_marker = 0.0
+        self.envelopes = {}
+
+    def automation_envelope(self, param):
+        return self.envelopes.get(id(param))
+
+    def create_automation_envelope(self, param):
+        return self.envelopes.setdefault(id(param), Envelope())
+
+
+class Pad:
+    def __init__(self, note, name, used=True):
+        self.note, self.name, self.chains = note, name, ([object()] if used else [])
+
+
+class DrumRack:
+    def __init__(self):
+        self.name = "Drum Rack"
+        self.class_name = "DrumGroupDevice"
+        self.can_have_drum_pads = True
+        self.parameters = [Param("Device On", 1.0)]
+        names = {36: "Kick", 38: "Snare", 39: "Clap", 42: "Closed Hat"}
+        self.drum_pads = [Pad(n, names.get(n, ""), n in names) for n in range(128)]
 
 
 class Scene:

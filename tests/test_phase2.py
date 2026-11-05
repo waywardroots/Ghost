@@ -248,6 +248,42 @@ def main():
         locs = ms.set_locators([ms.Locator(bar=9, name="Drop!")])
         check("set_locators renames in place", [(l["bar"], l["name"]) for l in locs] == [(1, "Intro"), (9, "Drop!")])
 
+        # ---- arrangement editing: pads, variations, audio, automation ----
+        song.tracks[drums].devices.append(fake_live.DrumRack())
+        pads = ms.get_drum_pads(drums)["pads"]
+        check("drum pads listed", {p_["name"]: p_["note"] for p_ in pads} ==
+              {"Kick": 36, "Snare": 38, "Clap": 39, "Closed Hat": 42})
+        expect_error("no drum rack explained", ms.get_drum_pads, vox, contains="no Drum Rack")
+        ms.create_clip(bass, 2, 16, name="Bass var", overwrite=True)
+        r = ms.place_clip(bass, 2, bar=13, repeats=1)
+        bclips = song.tracks[bass].arrangement_clips
+        check("variation replaces the clip under it", [(c.start_time, c.name) for c in bclips
+              if c.start_time >= 32] == [(32, ""), (48, "Bass var"), (64, "")] or
+              any(c.name == "Bass var" and c.start_time == 48 for c in bclips))
+        check("no overlap after placing", all(a.end_time <= b.start_time for a, b in zip(bclips, bclips[1:])))
+        import tempfile as _tf, soundfile as _sf, numpy as _np
+        fx = os.path.join(_tf.mkdtemp(), "Riser 01.wav"); _sf.write(fx, _np.zeros((4410, 2)), 44100)
+        r = ms.place_audio_clip(vox, fx, bar=5)
+        check("audio file onto the timeline", r["method"] == "direct" and
+              any(c.name == "Riser 01.wav" and c.start_time == 16 for c in song.tracks[vox].arrangement_clips))
+        expect_error("audio only on audio tracks", ms.place_audio_clip, bass, fx, 1, contains="not an audio track")
+        P = ms.AutoPoint
+        r = ms.automate(bass, 0, "Filter Cutoff", [P(bar=9, value="200 Hz"), P(bar=13, value="10 kHz")])
+        dev = song.tracks[bass].devices[0]
+        cut = dev.parameters[1]
+        envs = [c.envelopes.get(id(cut)) for c in song.tracks[bass].arrangement_clips
+                if c.start_time < 48 and c.end_time > 32]
+        check("automation written into the clips in range", r["clips"] == 1 and all(envs))
+        e = envs[0]
+        lo, mid, hi = e.value_at(0.1), e.value_at(8.1), e.value_at(15.9)
+        check("sweep rises from 200 Hz to 10 kHz", cut.str_for_value(lo).startswith(("19", "20", "21"))
+              and lo < mid < hi and cut.str_for_value(hi).endswith("kHz"))
+        check("parameter rests at the end value", str(cut).startswith(("9.9", "10.0")))
+        expect_error("automation needs arrangement clips there", ms.automate, bass, 0, "Filter Cutoff",
+                     [P(bar=200, value=0.1), P(bar=204, value=0.9)], contains="no Arrangement clips")
+        expect_error("bad unit explained", ms.automate, bass, 0, "Filter Cutoff",
+                     [P(bar=9, value="3 dB"), P(bar=13, value="1 kHz")], contains="not db")
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)

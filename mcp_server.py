@@ -320,6 +320,45 @@ def get_arrangement_info() -> dict:
     return live.send("get_arrangement_info")
 
 
+@tool()
+def get_drum_pads(track_index: int) -> dict:
+    """Which sound is on which MIDI note in a track's Drum Rack (e.g. to write a snare roll)."""
+    return live.send("get_drum_pads", track_index=track_index)
+
+
+@tool()
+def place_clip(track_index: int, clip_index: int, bar: float, repeats: int = 1) -> dict:
+    """Put a Session clip onto the Arrangement at a bar, repeated if asked. It replaces whatever
+    is on that track there - use it to swap in variations or add fills."""
+    return live.send("place_clip", track_index=track_index, clip_index=clip_index, bar=bar,
+                     repeats=repeats)
+
+
+@tool()
+def place_audio_clip(track_index: int, path: str, bar: float) -> dict:
+    """Put an audio file (e.g. a riser, impact or downlifter found with search_samples) onto an
+    audio track's Arrangement timeline at a bar. Risers usually END on the drop: start them
+    their length before it."""
+    return live.send("place_audio_clip", track_index=track_index, path=path, bar=bar)
+
+
+class AutoPoint(BaseModel):
+    bar: float = Field(description="position in bars (1 = song start; 17.5 = halfway through bar 17)")
+    value: float | str = Field(description="raw value, or display text like '200 Hz', '18 kHz', '-12 dB', '40 %'")
+
+
+@tool()
+def automate(track_index: int, device_index: int, parameter: str, points: list[AutoPoint],
+             step_beats: float = 0.25) -> dict:
+    """Draw automation (filter sweeps, volume rises, reverb throws) into the Arrangement clips on a
+    track between the first and last point, joining points with straight lines. Add the device
+    first (e.g. load_device 'Auto Filter'). End sweeps on the value the device should rest at,
+    because the parameter stays there after the automation ends."""
+    return live.send("automate", track_index=track_index, device_index=device_index,
+                     parameter=parameter, points=[p.model_dump() for p in points],
+                     step_beats=step_beats)
+
+
 def _at_playhead(beat: float, **kw) -> dict:
     live.send("set_song_time", beat=beat)
     for _ in range(30):  # Live applies the new playhead position on its next update
