@@ -141,6 +141,11 @@ class ClipSlot:
     def delete_clip(self):
         self.clip = None
 
+    def duplicate_clip_to(self, target):
+        import copy
+        assert target.clip is None
+        target.clip = copy.deepcopy(self.clip)
+
     def fire(self, record_length=None, launch_quantization=None):
         self.fired += 1
         tr = self.track
@@ -180,10 +185,17 @@ class Track:
     def stop_all_clips(self):
         self.stopped += 1
 
+    def duplicate_clip_to_arrangement(self, clip, time):
+        if not hasattr(self, "arrangement_clips"):
+            self.arrangement_clips = []
+        self.arrangement_clips.append(types.SimpleNamespace(
+            name=clip.name, start_time=float(time), end_time=float(time) + float(clip.length)))
+
 
 class Scene:
     def __init__(self):
         self.fired = 0
+        self.name = ""
 
     def fire(self):
         self.fired += 1
@@ -201,6 +213,15 @@ class Song:
         self.is_playing = False
         self.view = types.SimpleNamespace(selected_track=None, highlighted_clip_slot=None)
         self.undo_count = 0
+        self.cue_points = []
+        self.current_song_time = 0.0
+
+    def set_or_delete_cue(self):
+        hit = [c for c in self.cue_points if c.time == self.current_song_time]
+        if hit:
+            self.cue_points.remove(hit[0])
+        else:
+            self.cue_points.append(types.SimpleNamespace(time=self.current_song_time, name=""))
 
     def _new(self, kind, index):
         t = Track(kind, "%d-%s" % (len(self.tracks) + 1, "MIDI" if kind == "midi" else "Audio"),

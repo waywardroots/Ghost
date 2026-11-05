@@ -208,6 +208,39 @@ def main():
             ms.time.sleep = orig_wait
             song.tracks[vox].solo = False
 
+        # ---- scenes & arrangement ----
+        ms.set_time_signature(4, 4)
+        ms.set_scene_name(0, "Main idea")
+        check("scene name", song.scenes[0].name == "Main idea")
+        ms.duplicate_clip(bass, 0, 9)
+        check("duplicate clip (adds scenes)", song.tracks[bass].clip_slots[9].has_clip
+              and song.tracks[bass].clip_slots[9].clip is not song.tracks[bass].clip_slots[0].clip)
+        expect_error("duplicate needs a free slot", ms.duplicate_clip, bass, 0, 9, contains="overwrite")
+        # drums: 1-bar clip; bass: 4-bar clip (16 beats) from earlier
+        ms.create_clip(drums, 0, 4, overwrite=True)
+        Sec, Ref = ms.Section, ms.ClipRef
+        expect_error("section must fit the clips", ms.build_arrangement,
+                     [Sec(name="Odd", bars=6, clips=[Ref(track_index=bass, clip_index=0)])],
+                     contains="whole number")
+        check("failed build placed nothing", not getattr(song.tracks[bass], "arrangement_clips", []))
+        song.is_playing = True
+        r = ms.build_arrangement([
+            Sec(name="Intro", bars=8, clips=[Ref(track_index=drums)]),
+            Sec(name="Drop", bars=16, clips=[Ref(track_index=drums), Ref(track_index=bass)]),
+        ])
+        check("arrangement built", [s_["section"] for s_ in r["sections"]] == ["Intro", "Drop"]
+              and r["sections"][1]["start_bar"] == 9 and r["end_bar"] == 25)
+        dclips = song.tracks[drums].arrangement_clips
+        check("clips repeated to fill sections", len(dclips) == 24
+              and dclips[0].start_time == 0 and dclips[-1].end_time == 96)
+        check("bass only in the drop", [c.start_time for c in song.tracks[bass].arrangement_clips] == [32, 48, 64, 80])
+        check("locators named", sorted((c.time, c.name) for c in song.cue_points) == [(0, "Intro"), (32, "Drop")])
+        check("playback stopped while building", not song.is_playing)
+        r2 = ms.build_arrangement([Sec(name="Outro", bars=4, clips=[Ref(track_index=drums)])])
+        check("next build goes after existing work", r2["sections"][0]["start_bar"] == 25)
+        info = ms.get_arrangement_info()
+        check("arrangement info", info["length_bars"] == 28 and [l["name"] for l in info["locators"]] == ["Intro", "Drop", "Outro"])
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)

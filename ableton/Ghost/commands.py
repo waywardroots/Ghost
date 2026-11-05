@@ -435,6 +435,128 @@ class CommandHandler(object):
         return {"loaded": item.name, "method": "browser", "from": bpath,
                 "track_devices": [d.name for d in track.devices]}
 
+    # ------------------------------------------------------------------ scenes & arrangement
+    def cmd_set_scene_name(self, scene_index, name):
+        scenes = list(self.song.scenes)
+        if not 0 <= scene_index < len(scenes):
+            raise CommandError("scene_index out of range (%d scenes)" % len(scenes))
+        scenes[scene_index].name = name
+        return {"scene_index": scene_index, "name": name}
+
+    def cmd_duplicate_clip(self, track_index, clip_index, target_clip_index, overwrite=False):
+        track = self._track(track_index)
+        src = self._slot(track, clip_index)
+        if not src.has_clip:
+            raise CommandError("no clip at track %d, slot %d" % (track_index, clip_index))
+        dst = self._slot(track, target_clip_index, create_scenes=True)
+        if dst.has_clip:
+            if not overwrite:
+                raise CommandError("target slot already has a clip (overwrite=true replaces it)")
+            dst.delete_clip()
+        src.duplicate_clip_to(dst)
+        return {"track_index": track_index, "from": clip_index, "to": target_clip_index}
+
+    def _beats_per_bar(self):
+        return self.song.signature_numerator * 4.0 / self.song.signature_denominator
+
+    def _arrangement_end(self):
+        end = 0.0
+        for t in self._tracks():
+            for c in getattr(t, "arrangement_clips", []) or []:
+                end = max(end, float(c.end_time))
+        return end
+
+    def cmd_get_arrangement_info(self):
+        bpb = self._beats_per_bar()
+        tracks = []
+        for i, t in enumerate(self._tracks()):
+            clips = [{"name": c.name, "start_bar": round(float(c.start_time) / bpb + 1, 2),
+                      "end_bar": round(float(c.end_time) / bpb + 1, 2)}
+                     for c in (getattr(t, "arrangement_clips", []) or [])]
+            if clips:
+                tracks.append({"index": i, "name": t.name, "clips": clips})
+        cues = [{"name": c.name, "bar": round(float(c.time) / bpb + 1, 2)}
+                for c in (getattr(self.song, "cue_points", []) or [])]
+        return {"length_bars": round(self._arrangement_end() / bpb, 2), "tracks": tracks,
+                "locators": sorted(cues, key=lambda c: c["bar"])}
+
+    def cmd_build_arrangement(self, sections, start_bar=None):
+        """sections: [{"name": "Intro", "bars": 16, "clips": [{"track_index": 0, "clip_index": 0}]}]
+        Copies Session clips onto the Arrangement timeline, repeating each to fill its section,
+        and drops a named locator at the start of every section."""
+        if not isinstance(sections, (list, tuple)) or not sections:
+            raise CommandError("sections must be a non-empty list")
+        song, bpb = self.song, self._beats_per_bar()
+        tracks = self._tracks()
+        if not tracks or not hasattr(tracks[0], "duplicate_clip_to_arrangement"):
+            raise CommandError("this version of Live can't place clips in the Arrangement "
+                               "(needs Live 11 or newer)")
+        # check everything first, so a bad section changes nothing
+        plan = []
+        for n, sec in enumerate(sections):
+            name = ("%s" % sec.get("name", "Section %d" % (n + 1))).strip()
+            bars = sec.get("bars")
+            if not isinstance(bars, (int, float)) or bars <= 0:
+                raise CommandError("section '%s' needs bars > 0" % name)
+            beats = float(bars) * bpb
+            items = []
+            for c in sec.get("clips") or []:
+                ti, ci = c.get("track_index"), c.get("clip_index", 0)
+                track = self._track(ti)
+                slot = self._slot(track, ci)
+                if not slot.has_clip:
+                    raise CommandError("section '%s': no clip at track %d, slot %d" % (name, ti, ci))
+                length = float(slot.clip.length)
+                if length <= 0:
+                    raise CommandError("section '%s': clip on track %d has no length" % (name, ti))
+                reps = beats / length
+                if abs(reps - round(reps)) > 1e-6:
+                    raise CommandError(
+                        "section '%s' (%g bars) isn't a whole number of repeats of the %g-bar clip "
+                        "on track %d (%s). Use section lengths that fit every clip."
+                        % (name, bars, length / bpb, ti, track.name))
+                items.append((track, slot.clip, length, int(round(reps))))
+            plan.append((name, beats, items))
+
+        was_playing = bool(song.is_playing)
+        if was_playing:
+            song.stop_playing()
+        if start_bar is None:
+            t0 = self._arrangement_end()
+            t0 = (int(t0 / bpb) + (1 if t0 % bpb else 0)) * bpb  # next whole bar
+        else:
+            t0 = (float(start_bar) - 1) * bpb
+        start = t0
+        placed, out = 0, []
+        for name, beats, items in plan:
+            for track, clip, length, reps in items:
+                for k in range(reps):
+                    track.duplicate_clip_to_arrangement(clip, t0 + k * length)
+                    placed += 1
+            self._locator(t0, name)
+            out.append({"section": name, "start_bar": int(round(t0 / bpb)) + 1,
+                        "bars": beats / bpb, "tracks": len(items)})
+            t0 += beats
+        try:
+            song.current_song_time = start
+        except Exception:
+            pass
+        return {"sections": out, "clips_placed": placed,
+                "end_bar": int(round(t0 / bpb)) + 1, "length_bars": (t0 - start) / bpb}
+
+    def _locator(self, time, name):
+        song = self.song
+        try:
+            existing = [c for c in song.cue_points if abs(float(c.time) - time) < 1e-6]
+            if not existing:
+                song.current_song_time = time
+                song.set_or_delete_cue()
+                existing = [c for c in song.cue_points if abs(float(c.time) - time) < 1e-6]
+            if existing:
+                existing[0].name = name
+        except Exception as e:
+            self.log("Ghost: couldn't add locator '%s': %s" % (name, e))
+
     # ------------------------------------------------------------------ listening
     # Ghost records a track through Live's "Resampling" input so it can analyze the result.
     LISTEN_TRACK = "Ghost Listen"

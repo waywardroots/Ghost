@@ -76,6 +76,7 @@ Tracks: create_midi_track, create_audio_track, set_track_name, set_track_volume,
 Clips and notes: create_clip, add_notes, get_notes, set_clip_name, set_clip_loop, delete_clip, fire_clip, stop_track_clips, fire_scene.
 Sound: search_live_browser, load_device (Live devices, VST/AU plugins, presets, drum kits), load_sample.
 Listening: listen_to_track, analyze_audio_file.
+Arrangement: build_arrangement (Session clips onto the timeline, with named locators), get_arrangement_info, set_scene_name, duplicate_clip.
 Sound design: get_device_parameters, set_device_parameters, set_device_parameter, save/recall/list_sound_snapshot(s), find/read/write_preset_file.
 Your library: search_samples, list_my_plugins, get_style_profile.
 
@@ -103,4 +104,4 @@ Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's pla
 python tests/test_phase2.py
 python tests/test_presets.py
 ```
-Runs the full chain against a simulated Live, plus preset-file tests (106 checks).
+Runs the full chain against a simulated Live, plus preset-file tests (118 checks).

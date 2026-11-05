@@ -287,6 +287,50 @@ def fire_scene(scene_index: int) -> dict:
     return live.send("fire_scene", scene_index=scene_index)
 
 
+# ---- scenes & arrangement -------------------------------------------------------
+@tool()
+def set_scene_name(scene_index: int, name: str) -> dict:
+    """Name a Session scene (row), e.g. 'Drop' or 'Breakdown'."""
+    return live.send("set_scene_name", scene_index=scene_index, name=name)
+
+
+@tool()
+def duplicate_clip(track_index: int, clip_index: int, target_clip_index: int,
+                   overwrite: bool = False) -> dict:
+    """Copy a clip to another slot on the same track (works for audio and MIDI clips), e.g. to
+    make a variation without touching the original."""
+    return live.send("duplicate_clip", track_index=track_index, clip_index=clip_index,
+                     target_clip_index=target_clip_index, overwrite=overwrite)
+
+
+class ClipRef(BaseModel):
+    track_index: int
+    clip_index: int = 0
+
+
+class Section(BaseModel):
+    name: str = Field(description="section name, used for the locator, e.g. 'Intro', 'Drop 1'")
+    bars: int = Field(description="length in bars; must be a whole number of repeats of each clip")
+    clips: list[ClipRef] = Field(description="the Session clips that play in this section")
+
+
+@tool()
+def get_arrangement_info() -> dict:
+    """What's already in the Arrangement view: clips per track (start/end bar) and locators."""
+    return live.send("get_arrangement_info")
+
+
+@tool()
+def build_arrangement(sections: list[Section], start_bar: Optional[int] = None) -> dict:
+    """Write a song structure into the Arrangement view: each section's Session clips are copied
+    onto the timeline (repeated to fill the section) and a named locator marks each section.
+    By default it starts after anything already in the Arrangement, so existing work is kept.
+    Plan sections in multiples of 4 or 8 bars. Before running it, ask the user to save the set
+    (each placed clip is its own undo step). Afterwards tell them to press Tab for Arrangement view."""
+    return live.send("build_arrangement", sections=[s.model_dump() for s in sections],
+                     start_bar=start_bar)
+
+
 # ---- devices, plugins, samples -----------------------------------------------
 @tool()
 def search_live_browser(query: str, category: str = "all", limit: int = 25) -> list:
