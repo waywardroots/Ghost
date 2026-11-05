@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.db
+style_profile.json
+.venv/
