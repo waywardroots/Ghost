@@ -74,8 +74,18 @@ Ask Claude things like:
 Session: get_session_info, get_track_info, set_tempo, set_time_signature, start/stop_playback, undo.
 Tracks: create_midi_track, create_audio_track, set_track_name, set_track_volume, delete_track.
 Clips and notes: create_clip, add_notes, get_notes, set_clip_name, set_clip_loop, delete_clip, fire_clip, stop_track_clips, fire_scene.
-Sound: search_live_browser, load_device (Live devices, VST/AU plugins, presets, drum kits), load_sample, get/set_device_parameter.
+Sound: search_live_browser, load_device (Live devices, VST/AU plugins, presets, drum kits), load_sample.
+Sound design: get_device_parameters, set_device_parameters, set_device_parameter, save/recall/list_sound_snapshot(s), find/read/write_preset_file.
 Your library: search_samples, list_my_plugins, get_style_profile.
+
+### Sound design
+Ask for sounds in plain words: *"Load Serum on a new track and make a dark detuned reese bass"*, *"give me three pad variations on Pigments and let me switch between them"*, *"make my Diva lead brighter with a slower attack"*.
+
+- **Any plugin or Live device:** Ghost reads its controls and sets them in real units (`800 Hz`, `35 ms`, `-6 dB`, `Saw`). Many settings can change in one step.
+- **Snapshots:** Ghost saves versions of a sound (A, B, C...) so you can compare them and go back. They're kept in `MusicAssistant\snapshots.json`.
+- **u-he Diva, Hive, Repro-1, Repro-5:** Ghost can write complete presets as files. It starts from a factory/init patch or one of yours and saves the result to a `Ghost` folder in that synth's preset browser. Originals are never changed.
+- **Big plugins** (Serum 2, Pigments, Omnisphere, Spire...) only share the controls you expose. Do it once per plugin: open it in Live, click **Configure** (wrench icon), move the knobs you want Ghost to use (up to 128), then click Configure again. Saving the plugin as a Live preset afterwards keeps that setup.
+- To keep a sound from other plugins, save it in the plugin or with Live's Save Preset button. Ghost can't write their preset files.
 
 ### Good to know
 - Samples load straight from any folder on Live 12.0.5+ (onto audio tracks). Otherwise, add your sample folders to **Places** in Live's browser so Ghost can find them.
@@ -85,5 +95,6 @@ Your library: search_samples, list_my_plugins, get_style_profile.
 ### Test without Live
 ```
 python tests/test_phase2.py
+python tests/test_presets.py
 ```
-Runs the full chain against a simulated Live (36 checks).
+Runs the full chain against a simulated Live, plus preset-file tests (80 checks).

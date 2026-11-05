@@ -9,11 +9,57 @@ class Param:
         self.is_quantized = False
 
 
+class ShownParam(Param):
+    """A parameter that displays its value like a real plugin does."""
+
+    def __init__(self, name, fmt, value=0.5, mn=0.0, mx=1.0, items=None):
+        Param.__init__(self, name, value, mn, mx)
+        self._fmt = fmt
+        if items:
+            self.value_items = items
+            self.is_quantized = True
+
+    def str_for_value(self, v):
+        return self._fmt(v)
+
+    def __str__(self):
+        return self._fmt(self.value)
+
+
+def _hz(v):
+    f = 20.0 * (1000.0 ** v)
+    return "%.0f Hz" % f if f < 1000 else "%.2f kHz" % (f / 1000)
+
+
+def _ms(v):
+    t = 0.5 + 9999.5 * v ** 3
+    return "%.1f ms" % t if t < 1000 else "%.2f s" % (t / 1000)
+
+
+def _db(v):
+    import math
+    return "-inf dB" if v <= 0 else "%.1f dB" % (20 * math.log10(v) + 6)
+
+
+def synth_params():
+    waves = ["Sine", "Triangle", "Saw", "Square", "Noise"]
+    return [Param("Device On", 1.0),
+            ShownParam("Filter Cutoff", _hz, 0.7),
+            ShownParam("Filter Resonance", lambda v: "%d %%" % round(v * 100), 0.1),
+            ShownParam("Amp Attack", _ms, 0.05),
+            ShownParam("Amp Release", _ms, 0.3),
+            ShownParam("Osc A Wave", lambda v: waves[int(round(v))], 0.0, 0.0, 4.0, waves),
+            ShownParam("Osc B Wave", lambda v: waves[int(round(v))], 2.0, 0.0, 4.0, waves),
+            ShownParam("Master Volume", _db, 0.5),
+            ShownParam("Darkness", lambda v: "%d %%" % round((1 - v) * 100), 0.5),  # runs backwards
+            ShownParam("Unison", lambda v: "%d" % int(round(v)), 1.0, 1.0, 16.0)]
+
+
 class Device:
-    def __init__(self, name, params=("Device On", "Cutoff", "Resonance")):
+    def __init__(self, name, params=("Device On", "Cutoff", "Resonance"), class_name=None):
         self.name = name
-        self.class_name = name.replace(" ", "")
-        self.parameters = [Param(p) for p in params]
+        self.class_name = class_name or name.replace(" ", "")
+        self.parameters = [p if isinstance(p, Param) else Param(p) for p in params]
 
 
 class Note:
@@ -182,6 +228,11 @@ class Browser:
             else:
                 slot = self.song.view.highlighted_clip_slot or track.clip_slots[0]
                 slot.create_audio_clip(name)
+        elif name == "Serum":
+            track.devices.append(Device("Serum", synth_params(), class_name="PluginDevice"))
+        elif name == "FabFilter Pro-Q 3":
+            # a big plugin whose controls haven't been exposed with Configure yet
+            track.devices.append(Device(name, ("Device On",), class_name="PluginDevice"))
         else:
             track.devices.append(Device(name.rsplit(".", 1)[0]))
 

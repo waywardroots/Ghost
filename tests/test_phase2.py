@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "ableton"), str(ROOT / "tests")]
 os.environ.setdefault("GHOST_LIVE_PORT", "9877")
+import tempfile
+os.environ["GHOST_SNAPSHOTS"] = os.path.join(tempfile.mkdtemp(), "snaps.json")
 
 import fake_live  # noqa: E402
 
@@ -113,11 +115,69 @@ def main():
         expect_error("unknown device explained", ms.load_device, vox, "NotARealPlugin", contains="search_live_browser")
         hits = ms.search_live_browser("valhalla")
         check("browser search", hits and hits[0]["name"] == "ValhallaVintageVerb")
-        params = ms.get_device_parameters(bass, 0)["parameters"]
-        check("read parameters", [p["name"] for p in params][:2] == ["Device On", "Cutoff"])
-        check("set parameter by name (clamped)",
-              ms.set_device_parameter(bass, 0, "cutoff", 5.0)["value"] == 1.0)
-        check("set parameter by index", ms.set_device_parameter(bass, 0, "2", 0.3)["parameter"] == "Resonance")
+        # ---- sound design on a synth (simulated Serum) ----
+        info = ms.get_device_parameters(bass, 0)
+        names = [p["name"] for p in info["parameters"]]
+        check("read parameters with display values", names[:2] == ["Device On", "Filter Cutoff"]
+              and info["parameters"][1]["display"].endswith("Hz"))
+        check("choices listed for switches",
+              info["parameters"][5]["choices"] == ["Sine", "Triangle", "Saw", "Square", "Noise"])
+        check("parameter search", [p["name"] for p in
+              ms.get_device_parameters(bass, 0, query="amp")["parameters"]] == ["Amp Attack", "Amp Release"])
+        S = ms.ParamSetting
+        r = ms.set_device_parameters(bass, 0, [
+            S(parameter="Filter Cutoff", value="800 Hz"),
+            S(parameter="resonance", value="35 %"),
+            S(parameter="Amp Attack", value="40 ms"),
+            S(parameter="Amp Release", value="1.5 s"),
+            S(parameter="Osc A Wave", value="saw"),
+            S(parameter="Master Volume", value="-6 dB"),
+            S(parameter="Darkness", value="80 %"),
+            S(parameter="Unison", value="7"),
+        ])
+        shown = {x["parameter"]: x["display"] for x in r["set"]}
+        check("no errors in a full sound design pass", r["errors"] == [])
+        check("set cutoff in Hz", shown["Filter Cutoff"] in ("799 Hz", "800 Hz", "801 Hz"))
+        check("set percent", shown["Filter Resonance"] == "35 %")
+        check("set attack in ms", abs(float(shown["Amp Attack"].split()[0]) - 40) < 0.5)
+        check("set release in seconds", shown["Amp Release"] == "1.50 s")
+        check("pick waveform by name", shown["Osc A Wave"] == "Saw")
+        check("set volume in dB", shown["Master Volume"] in ("-6.0 dB", "-5.9 dB", "-6.1 dB"))
+        check("reverse-running parameter", shown["Darkness"] == "80 %")
+        check("stepped parameter", shown["Unison"] == "7")
+        r = ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="5 kHz"),
+                                                S(parameter="Amp Attack", value="300 Hz"),
+                                                S(parameter="Osc", value="Saw"),
+                                                S(parameter="Osc B Wave", value="Wobble"),
+                                                S(parameter="Nope", value=1)])
+        errs = " | ".join(e["error"] for e in r["errors"])
+        check("kHz works", r["set"][0]["display"] in ("4.99 kHz", "5.00 kHz", "5.01 kHz"))
+        check("bad settings reported, good ones still applied", len(r["set"]) == 1 and len(r["errors"]) == 4)
+        check("unit mismatch explained", "shown in s, not hz" in errs)
+        check("ambiguous name explained", "several parameters" in errs)
+        check("unknown option lists the options", "Options: Sine, Triangle, Saw" in errs)
+        check("bad set didn't change the value",
+              song.tracks[bass].devices[0].parameters[3].str_for_value(
+                  song.tracks[bass].devices[0].parameters[3].value).startswith("4"))
+        check("raw values still work", ms.set_device_parameter(bass, 0, "Filter Resonance", 5.0)["value"] == 1.0)
+        check("set by index", ms.set_device_parameter(bass, 0, "4", "200 ms")["parameter"] == "Amp Release")
+
+        # snapshots
+        ms.save_sound_snapshot(bass, 0, "test A")
+        ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="100 Hz"),
+                                            S(parameter="Osc A Wave", value="Square")])
+        ms.save_sound_snapshot(bass, 0, "test B")
+        r = ms.recall_sound_snapshot(bass, 0, "test A")
+        dev = song.tracks[bass].devices[0]
+        check("recall snapshot", r["errors"] == [] and str(dev.parameters[1]).split()[0] in ("4.99", "5.00", "5.01"))
+        check("recall restores switches", str(dev.parameters[5]) == "Saw")
+        check("snapshots listed", {"test A", "test B"} <= {s["name"] for s in ms.list_sound_snapshots()})
+        expect_error("missing snapshot explained", ms.recall_sound_snapshot, bass, 0, "nope", contains="Saved:")
+
+        # a plugin whose controls aren't exposed yet
+        ms.load_device(vox, "Pro-Q 3", kind="plugin")
+        info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)
+        check("Configure hint for unexposed plugin", "Configure" in info.get("hint", ""))
         ms.set_track_volume(vox, 0.7)
         check("track volume", song.tracks[vox].mixer_device.volume.value == 0.7)
 

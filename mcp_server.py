@@ -23,6 +23,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from indexer import app_dir, build_profile, normalize_key_query, open_db  # noqa: E402
+import presets  # noqa: E402
 
 try:  # mcp 2.x
     from mcp.server.mcpserver import MCPServer as _Server
@@ -116,7 +117,19 @@ samples, and prefer their own plugins (list_my_plugins) and samples (search_samp
 Call get_session_info before editing so track and clip indexes are current. Indexes start at 0.
 Clip slots are scene rows. Note timing is in beats: 1.0 = quarter note, 4.0 = one 4/4 bar.
 MIDI pitch 60 = C3 in Live (middle C). Use load_device with exact names; if unsure, search_live_browser.
-Make changes in small steps and tell the user what you changed; undo reverses Live's last change."""
+Make changes in small steps and tell the user what you changed; undo reverses Live's last change.
+
+Sound design:
+- Load the synth or effect with load_device, then get_device_parameters (use query to narrow
+  big plugins). Set values with set_device_parameters, in real units ('800 Hz', '35 ms', '-6 dB',
+  'Saw') rather than raw numbers when the parameter shows units.
+- If a plugin shows a 'hint' about Configure, relay it: the user has to expose that plugin's
+  controls to Live once before you can shape it.
+- save_sound_snapshot before big changes and for each variation, so the user can compare and go back.
+- For u-he synths (Diva, Hive, Repro-1, Repro-5) you can also write complete presets as files:
+  find_preset_files (prefer an init patch or the user's own presets), read_preset_file to learn
+  the layout, then write_preset_file. Ghost can't save presets for other plugins; tell the user
+  to save from the plugin or with Live's Save Preset button when they like a sound."""
 
 server = _Server("ghost", instructions=INSTRUCTIONS)
 tool = server.tool
@@ -290,18 +303,129 @@ def load_sample(track_index: int, path: str, clip_index: Optional[int] = None,
 
 
 @tool()
-def get_device_parameters(track_index: int, device_index: int) -> dict:
-    """List a device's parameters with current values and ranges."""
-    return live.send("get_device_parameters", track_index=track_index, device_index=device_index)
+def get_device_parameters(track_index: int, device_index: int,
+                          query: Optional[str] = None) -> dict:
+    """List a device's parameters: raw value, what it shows (display, e.g. '800 Hz'), range,
+    and choices for switches. query filters by name (e.g. 'filter', 'env', 'osc')."""
+    return live.send("get_device_parameters", track_index=track_index,
+                     device_index=device_index, query=query)
+
+
+class ParamSetting(BaseModel):
+    parameter: str = Field(description="parameter name (exact or unique part) or its index")
+    value: float | str = Field(description="a number = raw Live value (min-max from "
+                               "get_device_parameters); text = what the device shows, in real "
+                               "units or names: '800 Hz', '1.2 kHz', '35 ms', '-6 dB', '40 %', "
+                               "'-12 st', 'Saw', 'On'")
+
+
+@tool()
+def set_device_parameters(track_index: int, device_index: int,
+                          settings: list[ParamSetting]) -> dict:
+    """Shape a sound: set many parameters on one device at once. Settings that fail are listed
+    in 'errors' while the rest still apply. Each result shows the new display value."""
+    return live.send("set_device_parameters", track_index=track_index, device_index=device_index,
+                     settings=[s.model_dump() for s in settings])
 
 
 @tool()
 def set_device_parameter(track_index: int, device_index: int, parameter: str,
-                         value: float) -> dict:
-    """Set a device parameter by name (or index as text), clamped to its range."""
-    p: object = int(parameter) if str(parameter).isdigit() else parameter
+                         value: float | str) -> dict:
+    """Set one parameter. value: raw number, or display text like '800 Hz', '-6 dB', 'Saw'."""
     return live.send("set_device_parameter", track_index=track_index,
-                     device_index=device_index, parameter=p, value=value)
+                     device_index=device_index, parameter=parameter, value=value)
+
+
+# ---- sound snapshots (saved on disk, survive restarts) -------------------------
+SNAPSHOT_FILE = Path(os.environ.get("GHOST_SNAPSHOTS", str(app_dir() / "snapshots.json")))
+
+
+def _load_snaps() -> dict:
+    try:
+        return json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_snaps(data: dict):
+    SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SNAPSHOT_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    tmp.replace(SNAPSHOT_FILE)
+
+
+@tool()
+def save_sound_snapshot(track_index: int, device_index: int, name: str) -> dict:
+    """Save every setting of a device under a name, so you can try variations and come back.
+    Use before big changes and for 'give me 3 versions' (save each as A, B, C)."""
+    info = live.send("get_device_parameters", track_index=track_index, device_index=device_index)
+    snaps = _load_snaps()
+    snaps[name] = {"device": info["device"],
+                   "values": {p["name"]: p["value"] for p in info["parameters"]
+                              if p["name"] != "Device On"}}
+    _save_snaps(snaps)
+    return {"saved": name, "device": info["device"], "parameters": len(snaps[name]["values"])}
+
+
+@tool()
+def recall_sound_snapshot(track_index: int, device_index: int, name: str) -> dict:
+    """Put a device back to a saved snapshot (matched by parameter name)."""
+    snaps = _load_snaps()
+    if name not in snaps:
+        raise LiveError(f"no snapshot named '{name}'. Saved: {', '.join(snaps) or 'none'}")
+    snap = snaps[name]
+    current = live.send("get_device_parameters", track_index=track_index, device_index=device_index)
+    names = {p["name"] for p in current["parameters"]}
+    settings = [{"parameter": k, "value": v} for k, v in snap["values"].items() if k in names]
+    if not settings:
+        raise LiveError(f"snapshot '{name}' was taken on {snap['device']}, which shares no "
+                        f"parameters with {current['device']}")
+    r = live.send("set_device_parameters", track_index=track_index, device_index=device_index,
+                  settings=settings)
+    note = None if snap["device"] == current["device"] else \
+        f"snapshot came from {snap['device']}, applied to {current['device']}"
+    return {"recalled": name, "restored": len(r["set"]), "errors": r["errors"], "note": note}
+
+
+@tool()
+def list_sound_snapshots() -> list:
+    """Saved sound snapshots and which device each came from."""
+    return [{"name": k, "device": v["device"], "parameters": len(v["values"])}
+            for k, v in _load_snaps().items()]
+
+
+# ---- preset files (u-he Diva, Hive, Repro-1, Repro-5) --------------------------
+def _presets_call(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except presets.PresetError as e:
+        raise LiveError(str(e)) from e
+
+
+@tool()
+def find_preset_files(synth: str = "", query: str = "", limit: int = 40) -> list:
+    """Find preset files Ghost can read and write: u-he synths (Diva, Hive, Repro-1, Repro-5).
+    query matches words in the name or folder (e.g. 'init', 'bass', 'pad'). The user's own
+    presets are listed first."""
+    return _presets_call(presets.find_presets, synth, query, limit)
+
+
+@tool()
+def read_preset_file(path: str) -> dict:
+    """Read every setting in a u-he preset, grouped by section (oscillators, filters,
+    envelopes...). Use it to learn a preset's layout before writing a new one."""
+    return _presets_call(presets.read_preset, path)
+
+
+@tool()
+def write_preset_file(template_path: str, name: str, changes: dict[str, float | str],
+                      description: str = "") -> dict:
+    """Make a new u-he preset: copy template_path (an init patch, factory or user preset),
+    change settings, and save it as a new preset in the synth's 'Ghost' folder. The template
+    is never modified. changes keys are 'Section:Param' (or 'Param' when unique), using names
+    and value scales exactly as read_preset_file shows them. The user then picks it in the
+    synth's own preset browser (folder 'Ghost'; refresh the browser if needed)."""
+    return _presets_call(presets.write_preset, template_path, name, changes, description)
 
 
 # ---- the user's own library (from indexer.py) ----------------------------------

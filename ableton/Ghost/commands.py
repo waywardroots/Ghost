@@ -9,7 +9,10 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 
-VERSION = "0.2.0"
+from . import params as params_mod
+
+VERSION = "0.3.0"
+PLUGIN_CLASSES = ("PluginDevice", "AuPluginDevice")
 
 # Browser categories searched for "all", in this order.
 BROWSER_CATEGORIES = (
@@ -446,25 +449,69 @@ class CommandHandler(object):
             raise CommandError("device_index out of range (track has %d devices)" % len(devices))
         return devices[device_index]
 
-    def cmd_get_device_parameters(self, track_index, device_index):
-        d = self._device(track_index, device_index)
-        return {"device": d.name, "parameters": [
-            {"index": i, "name": p.name, "value": float(p.value), "min": float(p.min),
-             "max": float(p.max), "is_quantized": bool(getattr(p, "is_quantized", False))}
-            for i, p in enumerate(d.parameters)]}
-
-    def cmd_set_device_parameter(self, track_index, device_index, parameter, value):
+    def cmd_get_device_parameters(self, track_index, device_index, query=None):
         d = self._device(track_index, device_index)
         params = list(d.parameters)
-        target = None
-        if isinstance(parameter, int):
-            if 0 <= parameter < len(params):
-                target = params[parameter]
-        else:
-            q = str(parameter).lower().strip()
-            target = next((p for p in params if p.name.lower() == q), None) or \
-                next((p for p in params if q in p.name.lower()), None)
-        if target is None:
-            raise CommandError("parameter '%s' not found on %s" % (parameter, d.name))
-        target.value = max(target.min, min(target.max, float(value)))
-        return {"device": d.name, "parameter": target.name, "value": float(target.value)}
+        q = (query or "").lower().strip()
+        out = []
+        for i, p in enumerate(params):
+            if q and q not in p.name.lower():
+                continue
+            e = {"index": i, "name": p.name, "value": round(float(p.value), 6),
+                 "display": params_mod.display(p), "min": float(p.min), "max": float(p.max)}
+            if getattr(p, "is_quantized", False):
+                e["choices"] = params_mod.choices(p)
+            out.append(e)
+        res = {"device": d.name, "class_name": getattr(d, "class_name", None),
+               "parameter_count": len(params), "parameters": out}
+        if getattr(d, "class_name", "") in PLUGIN_CLASSES and len(params) <= 2:
+            res["hint"] = ("This plugin isn't sharing its controls with Live yet. Ask the user to "
+                           "open the device in Live, click Configure (the wrench icon), move each "
+                           "control Ghost should use (up to 128), then click Configure again.")
+        return res
+
+    def _find_param(self, d, params, parameter):
+        if isinstance(parameter, int) or (isinstance(parameter, str) and parameter.isdigit()):
+            i = int(parameter)
+            if 0 <= i < len(params):
+                return params[i]
+            raise CommandError("parameter index %d out of range on %s" % (i, d.name))
+        q = ("%s" % (parameter,)).lower().strip()
+        exact = [p for p in params if p.name.lower().strip() == q]
+        if exact:
+            return exact[0]
+        partial = [p for p in params if q in p.name.lower()]
+        if len(partial) == 1:
+            return partial[0]
+        if partial:
+            raise CommandError("'%s' matches several parameters on %s: %s"
+                               % (parameter, d.name, ", ".join(p.name for p in partial[:12])))
+        raise CommandError("parameter '%s' not found on %s (use get_device_parameters)"
+                           % (parameter, d.name))
+
+    def cmd_set_device_parameters(self, track_index, device_index, settings):
+        """settings: [{"parameter": name or index, "value": raw number or text like '800 Hz'}]"""
+        d = self._device(track_index, device_index)
+        params = list(d.parameters)
+        if not isinstance(settings, (list, tuple)) or not settings:
+            raise CommandError("settings must be a non-empty list")
+        done, errors = [], []
+        for s in settings:
+            try:
+                p = self._find_param(d, params, s.get("parameter"))
+                done.append(params_mod.set_param(p, s.get("value")))
+            except (CommandError, params_mod.ParamError) as e:
+                errors.append({"parameter": s.get("parameter"), "error": str(e)})
+            except Exception as e:
+                errors.append({"parameter": s.get("parameter"),
+                               "error": "%s: %s" % (type(e).__name__, e)})
+        return {"device": d.name, "set": done, "errors": errors}
+
+    def cmd_set_device_parameter(self, track_index, device_index, parameter, value):
+        r = self.cmd_set_device_parameters(track_index, device_index,
+                                           [{"parameter": parameter, "value": value}])
+        if r["errors"]:
+            raise CommandError(r["errors"][0]["error"])
+        out = dict(r["set"][0])
+        out["device"] = r["device"]
+        return out
