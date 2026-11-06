@@ -341,8 +341,7 @@ class Song:
         self._pending_time = None
         self.back_to_arranger = False
         self.clip_trigger_quantization = 4
-        self.loop, self._loop_start, self._loop_length = True, 0.0, 720.0
-        self.song_length = 720.0
+        self.loop, self.loop_start, self.loop_length = True, 0.0, 720.0
         self.punch_in = self.punch_out = self.record_mode = False
         self.master_track = Track("other", "Master", 0)
         self.master_track.has_audio_input = False
@@ -400,47 +399,26 @@ class Song:
         for t in self.tracks:
             del t.clip_slots[index]
 
-    # Live keeps the loop brace inside the song
-    @property
-    def loop_start(self):
-        return self._loop_start
-
-    @loop_start.setter
-    def loop_start(self, v):
-        if v + self._loop_length > self.song_length:
-            raise RuntimeError("Cannot set the Loopstart behind the Songlength")
-        self._loop_start = v
-
-    @property
-    def loop_length(self):
-        return self._loop_length
-
-    @loop_length.setter
-    def loop_length(self, v):
-        if self._loop_start + v > self.song_length:
-            raise RuntimeError("Cannot set the Looplength behind the Songlength")
-        self._loop_length = v
-
     def start_playing(self):
         self.is_playing = True
-        if self.record_mode and self.punch_in:  # Arrangement recording, punched in/out
+        if self.record_mode:  # Arrangement recording from the playhead
             armed = [t for t in self.tracks if getattr(t, "arm", False)]
             assert len(armed) == 1, "only Ghost's own track may be armed while recording"
             rec = armed[0]
             assert rec.input_routing_type.display_name == "Resampling"
-            assert not self.loop, "loop should be off while recording"
             assert not self.back_to_arranger, "tracks must follow the Arrangement"
             soloed = [t for t in self.tracks if t.solo]
             src = soloed[0] if soloed else [t for t in self.tracks if t.has_midi_input and t.devices][0]
-            secs = self.loop_length * 60.0 / self.tempo
-            ac = ArrClip("recording", self.loop_start, self.loop_length)
-            ac.file_path = render_track(src, secs)
+            bpb = 4.0 * self.signature_numerator / self.signature_denominator
+            beats = bpb + 64  # plays on until Ghost stops it; record plenty
+            ac = ArrClip("recording", self.current_song_time, beats)
+            ac.file_path = render_track(src, beats * 60.0 / self.tempo)
             if not hasattr(rec, "arrangement_clips"):
                 rec.arrangement_clips = []
             rec.arrangement_clips.append(ac)
-            self.mix_recorded_from = self.loop_start
+            self.mix_recorded_from = self.current_song_time + bpb  # measured after the run-up
             self.recorded_solo = src.name if soloed else None
-            self._song_time = self.loop_start + self.loop_length + 0.5  # it has played through
+            self._song_time = self.current_song_time + beats  # it has played through
 
     def stop_playing(self):
         self.is_playing = False

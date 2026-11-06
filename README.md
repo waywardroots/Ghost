@@ -92,7 +92,7 @@ Ask for sounds in plain words: *"Load Serum on a new track and make a dark detun
 ### Listening
 Ghost can check its own work. `listen_to_track` plays a phrase on a track (soloed), records it inside Live through **Resampling**, and measures the result: low end per band, brightness, pitch, grit, movement (e.g. reese beating, wobble rate), stereo width (and whether the low end is too wide), attack and sustain. It also renders a spectrogram picture Claude can look at. `analyze_audio_file` does the same for any sample or reference, and `compare_to` lists how two sounds differ, so Ghost can shape a sound until it matches a reference.
 
-`listen_to_mix` hears the whole song instead: it plays the Arrangement from a bar with nothing soloed, records the master output with Live's own Arrangement recording (punched in to just those bars, on a temporary track; your armed tracks, loop and punch settings are put back) and adds integrated loudness (LUFS) and peak, for mixing and mastering. Track index `-1` is the Master track, so Ghost can load and set mastering devices there.
+`listen_to_mix` hears the whole song instead: it plays the Arrangement from a bar with nothing soloed, records the master output with Live's own Arrangement recording (on a temporary track, starting a bar early and trimming that bar off; your armed tracks and record button are put back, and your loop is left alone) and adds integrated loudness (LUFS) and peak, for mixing and mastering. Track index `-1` is the Master track, so Ghost can load and set mastering devices there.
 
 Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's playback while it records, and puts your solo settings back afterwards. Check it yourself any time: `py -3.13 listen.py sound.wav [reference.wav]`.
 
@@ -110,7 +110,7 @@ python tests/test_style.py
 python tests/test_reference_scan.py
 ```
 Runs the full chain against a simulated Live, plus preset-file, dataset, pattern and
-reference tests (199 checks).
+reference tests (200 checks).
 
 ---
 

@@ -1038,15 +1038,19 @@ class CommandHandler(object):
         out = {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
         if state["mix"]:
             bpb = self._beats_per_bar()
-            out["from_bar"] = round(state["rec_start"] / bpb + 1, 3)  # recording starts a bar in
+            out["from_bar"] = round(state["rec_start"] / bpb + 1, 3)  # measured from a bar in
+            out["trim_seconds"] = round(bpb * 60.0 / float(song.tempo), 6)  # the run-up bar
+            out["keep_seconds"] = round(beats * 60.0 / float(song.tempo), 6)
             seconds = (beats + 2 * bpb) * 60.0 / float(song.tempo)
             out["wait_seconds"] = round(seconds + 0.5, 2)
         return out
 
     # Recording the Arrangement: Live's own Arrangement recording on the temporary track,
-    # punched in/out to exactly the bars being measured. (Launching a Session record slot while
-    # the Arrangement plays left plugin synths silent in the recording on some setups.)
-    _TRANSPORT = ("loop", "loop_start", "loop_length", "punch_in", "punch_out", "record_mode")
+    # started one bar early; the connector trims that run-up bar off before measuring. (Launching
+    # a Session record slot while the Arrangement played left plugin synths silent in the
+    # recording on some setups.) The loop and punch settings are left alone: Live applies loop
+    # changes late, and moving the loop brace fights its "inside the song" rule.
+    _TRANSPORT = ("record_mode",)
 
     def _start_arrangement_recording(self, state, listen, beats):
         song, bpb = self.song, self._beats_per_bar()
@@ -1061,25 +1065,13 @@ class CommandHandler(object):
         play_from = float(song.current_song_time)
         start = play_from + bpb  # one bar of run-up, like pressing Play a bar early
         state["play_from"], state["rec_start"], state["rec_end"] = play_from, start, start + beats
-        song.loop = False
-        # Live keeps the loop inside the song: shrink it before moving it
-        song.loop_length = min(float(beats), float(song.loop_length))
-        song.loop_start = start
-        song.loop_length = beats
-        song.punch_in = True
-        song.punch_out = True
         song.record_mode = True
         song.start_playing()
 
     def _restore_transport(self, st):
         song = self.song
         tr = st.get("transport", {})
-        if "loop_length" in tr:  # shrink first so the loop can move anywhere (see above)
-            try:
-                song.loop_length = min(float(tr["loop_length"]), float(song.loop_length))
-            except Exception:
-                pass
-        for k in ("record_mode", "punch_in", "punch_out", "loop_start", "loop_length", "loop"):
+        for k in self._TRANSPORT:
             if k in tr:
                 try:
                     setattr(song, k, tr[k])

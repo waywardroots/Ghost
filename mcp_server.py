@@ -946,6 +946,8 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
                 time.sleep(0.5)
         else:
             dest = Path(r["file"])  # analyze it where Live saved it
+        if start.get("trim_seconds"):  # Arrangement recordings start with a bar of run-up
+            dest = _trim_recording(dest, start["trim_seconds"], start.get("keep_seconds"), tag)
     finally:
         try:
             live.send("end_audition")
@@ -954,6 +956,20 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
     out = _report(str(dest), title, compare_to)
     if loudness:
         out = _add_loudness(out, str(dest))
+    return out
+
+
+def _trim_recording(path: Path, skip: float, keep: Optional[float], tag: str) -> Path:
+    """Cut the run-up off an Arrangement recording (and anything past the measured bars)."""
+    import soundfile as sf
+    y, sr = sf.read(str(path), always_2d=True)
+    a = int(round(skip * sr))
+    b = len(y) if not keep else min(len(y), a + int(round(keep * sr)))
+    if a >= b:
+        raise LiveError("the recording was shorter than expected - nothing left after the run-up")
+    LISTEN_DIR.mkdir(parents=True, exist_ok=True)
+    out = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}_trimmed.wav"
+    sf.write(str(out), y[a:b], sr, subtype="PCM_24")
     return out
 
 

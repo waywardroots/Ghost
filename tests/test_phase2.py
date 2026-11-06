@@ -214,6 +214,9 @@ def main():
             mix = _j.loads(ms.listen_to_mix(bar=5, bars=2)[0])
             check("listen to the whole mix from a bar", "heard" in mix
                   and getattr(song, "mix_recorded_from", None) == 4.0 * song.signature_numerator * 4.0 / song.signature_denominator)
+            _bpb = 4.0 * song.signature_numerator / song.signature_denominator
+            check("run-up bar trimmed off", abs(mix["measurements"]["seconds"]
+                                               - 2 * _bpb * 60.0 / song.tempo) < 0.05)
             check("mix listen measures loudness", isinstance(mix["measurements"].get("lufs_integrated"), float)
                   and any("LUFS" in h for h in mix["heard"]))
             check("tracks follow the Arrangement again", song.back_to_arranger is False
@@ -248,7 +251,7 @@ def main():
             check("listen to a track from the Arrangement", "heard" in _j.loads(out[0])
                   and song.recorded_solo == song.tracks[bass].name
                   and song.tracks[bass].solo is False and song.back_to_arranger is False)
-            check("arrangement recording restores transport and arms",
+            check("arrangement recording leaves the loop alone, restores record and arms",
                   song.loop is True and song.loop_start == 0.0 and song.loop_length == 720.0
                   and not song.punch_in and not song.punch_out and not song.record_mode
                   and song.tracks[vox].arm is True
