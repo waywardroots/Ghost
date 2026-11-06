@@ -298,6 +298,14 @@ def main():
         slots_before = len(song.scenes)
         check("temporary copy cleaned up", len(song.scenes) == slots_before and
               sum(1 for sl in song.tracks[bass].clip_slots if sl.has_clip) == 3)
+        res = dev.parameters[2]
+        r2 = ms.automate(bass, 0, "Filter Resonance", [P(bar=9, value="10 %"), P(bar=13, value="60 %")])
+        clip9 = [c for c in song.tracks[bass].arrangement_clips if abs(c.start_time - 32) < 1e-3][0]
+        kept_env = clip9.envelopes.get(id(cut))
+        check("second lane keeps the first lane's automation",
+              r2.get("kept_automation") == ["Filter Cutoff"] and kept_env is not None
+              and kept_env.value_at(0.1) < kept_env.value_at(15.9)
+              and clip9.envelopes.get(id(res)) is not None)
         expect_error("bad unit explained", ms.automate, bass, 0, "Filter Cutoff",
                      [P(bar=9, value="3 dB"), P(bar=13, value="1 kHz")], contains="not db")
 

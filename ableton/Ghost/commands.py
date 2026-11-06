@@ -754,6 +754,8 @@ class CommandHandler(object):
         length = float(src.clip.length)
         step = max(0.0625, float(step_beats))
         made_scene, placed, steps = False, 0, 0
+        others = [q for q in self._automatable(track) if q is not p]
+        kept = set()
         free = [s for s in track.clip_slots if not s.has_clip]
         if not free:
             song.create_scene(-1)
@@ -768,6 +770,10 @@ class CommandHandler(object):
                 env = clip.automation_envelope(p) or clip.create_automation_envelope(p)
                 if env is None:
                     raise CommandError("Live won't automate %s here" % p.name)
+                # Keep automation already drawn on the clip being replaced (other lanes).
+                old = self._arrangement_clip_at(track, start)
+                if old is not None:
+                    kept.update(self._copy_envelopes(old, clip, others, length, step))
                 t = 0.0
                 while t < length - 1e-9:
                     st = min(step, length - t)
@@ -784,9 +790,51 @@ class CommandHandler(object):
             if made_scene:
                 song.delete_scene(len(list(song.scenes)) - 1)
         p.value = pts[-1][1]  # rest at the end value outside the automated clips
-        return {"parameter": p.name, "device": d.name, "clips_placed": placed, "steps": steps,
-                "ends_at": params_mod.display(p), "start_bar": t0 / bpb + 1,
-                "end_bar": (t0 + placed * length) / bpb + 1}
+        out = {"parameter": p.name, "device": d.name, "clips_placed": placed, "steps": steps,
+               "ends_at": params_mod.display(p), "start_bar": t0 / bpb + 1,
+               "end_bar": (t0 + placed * length) / bpb + 1}
+        if kept:
+            out["kept_automation"] = sorted(kept)
+        return out
+
+    def _automatable(self, track):
+        """Every parameter on the track a clip envelope can hold: devices plus the mixer."""
+        out = []
+        for d in list(track.devices):
+            out.extend(list(d.parameters))
+        mixer = getattr(track, "mixer_device", None)
+        if mixer is not None:
+            for name in ("volume", "panning"):
+                q = getattr(mixer, name, None)
+                if q is not None:
+                    out.append(q)
+            out.extend(list(getattr(mixer, "sends", []) or []))
+        return out
+
+    def _copy_envelopes(self, old, clip, params, length, step):
+        """Redraw old's automation for params into clip, sampled every step. Returns names."""
+        names = []
+        for q in params:
+            try:
+                src_env = old.automation_envelope(q)
+            except Exception:
+                src_env = None
+            if src_env is None:
+                continue
+            dst = clip.automation_envelope(q) or clip.create_automation_envelope(q)
+            if dst is None:
+                continue
+            t, wrote = 0.0, False
+            while t < length - 1e-9:
+                st = min(step, length - t)
+                v = src_env.value_at(t + st / 2)
+                if v is not None:
+                    dst.insert_step(t, st, v)
+                    wrote = True
+                t += st
+            if wrote:
+                names.append(q.name)
+        return names
 
     # Locators: Live moves the playhead a moment after it's set, so placing a locator takes
     # two steps (set_song_time, then cue_at_playhead once the playhead has arrived).
