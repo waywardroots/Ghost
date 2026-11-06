@@ -555,17 +555,37 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
     p0 = matches[0]
     idx, lo, hi, original = p0["index"], p0["min"], p0["max"], p0["value"]
 
-    def show(v):
+    def read():
+        cur = live.send("get_device_parameters", track_index=track_index,
+                        device_index=device_index)["parameters"]
+        return (next(x["display"] for x in cur if x["index"] == idx) or "").strip()
+
+    def is_raw(text, v):
+        # Live shows the bare raw number ("0.25") when a plugin hasn't reported its own text,
+        # e.g. right after the set is loaded.
+        try:
+            return abs(float(text) - float(v)) < 0.006
+        except ValueError:
+            return False
+
+    def show(v, timeout=1.5):
+        """Set v and return the display once it has caught up (same text twice in a row,
+        and not the bare raw number)."""
         live.send("set_device_parameter", track_index=track_index, device_index=device_index,
                   parameter=str(idx), value=float(v))
         time.sleep(settle)
-        cur = live.send("get_device_parameters", track_index=track_index,
-                        device_index=device_index)["parameters"]
-        return next(x["display"] for x in cur if x["index"] == idx) or ""
+        last, waited = read(), settle
+        while waited < timeout:
+            time.sleep(0.08)
+            waited += 0.08
+            now = read()
+            if now == last and not is_raw(now, v):
+                return now
+            last = now
+        return last
 
     def done(v):
-        text = show(v)
-        return {"parameter": p0["name"], "value": round(v, 6), "display": text.strip(),
+        return {"parameter": p0["name"], "value": round(v, 6), "display": show(v),
                 "calibrated": True}
 
     text = str(want).strip()
@@ -579,12 +599,17 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
                     return done(v)
             raise LiveError(f"couldn't find a setting of {p0['name']} that shows '{text}'")
         amount, family = target
-        a, b = pm.parse_amount(show(lo)), pm.parse_amount(show(hi))
+        tl, th = show(lo), show(hi)
+        if family and (is_raw(tl, lo) or is_raw(th, hi)):
+            raise LiveError(f"{p0['name']} only shows raw numbers right now ('{th}'), so I can't "
+                            f"aim for '{text}'. Open the plugin window once, or use a raw value "
+                            f"between {lo:g} and {hi:g}")
+        a, b = pm.parse_amount(tl), pm.parse_amount(th)
         if a is None or b is None or a[0] == b[0]:
             raise LiveError(f"{p0['name']} doesn't show numbers I can steer by; use a raw value")
         shown = a[1] or b[1]
-        if family and shown and family != shown:
-            raise LiveError(f"{p0['name']} is shown in {shown}, not {family}")
+        if family and family != shown:
+            raise LiveError(f"{p0['name']} is shown in {shown or 'plain numbers'}, not {family}")
         up = b[0] > a[0]
         if amount <= min(a[0], b[0]):
             return done(lo if up else hi)
@@ -600,9 +625,18 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
                 l = mid
             else:
                 h = mid
-        return done((l + h) / 2)
+        out = done((l + h) / 2)
+        # Never keep a result that missed: a stale or odd display would otherwise leave the
+        # sound somewhere unexpected.
+        got = pm.parse_amount(out["display"])
+        tol = max(0.15 * abs(amount), 0.002 if family == "s" else 1.0)
+        if got is None or got[1] != shown or abs(got[0] - amount) > tol:
+            raise LiveError(f"{p0['name']} ended up showing '{out['display']}' instead of "
+                            f"'{text}', so I put it back; use a raw value")
+        return out
     except LiveError:
-        show(original)  # put it back
+        live.send("set_device_parameter", track_index=track_index, device_index=device_index,
+                  parameter=str(idx), value=float(original))  # put it back
         raise
 
 

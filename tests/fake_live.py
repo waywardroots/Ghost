@@ -73,12 +73,29 @@ class LaggyParam(Param):
         self._shown = self._fmt(self.value)
 
 
+class RawParam(LaggyParam):
+    """A plugin control that (like SubBoomBass2 right after a set loads) hasn't reported its
+    own text: Live shows the bare raw number. waking=True starts reporting once it's moved."""
+
+    def __init__(self, name, fmt, value=0.5, waking=False):
+        LaggyParam.__init__(self, name, fmt, value)
+        self._waking, self._start, self._awake = waking, value, False
+        self._shown = "%.2f" % value
+
+    def refresh(self):
+        if self._waking and self.value != self._start:
+            self._awake = True
+        self._shown = self._fmt(self.value) if self._awake else "%.2f" % self.value
+
+
 def old_plugin():
     styles = "AENTP"
     return Device("Old Verb", [Param("Device On", 1.0),
                               LaggyParam("Decay", lambda v: "%.2f s " % (0.3 * (233.0 ** v))),
                               LaggyParam("Style", lambda v: styles[min(4, int(v * 5))] + " ", 0.0),
-                              LaggyParam("Mix", lambda v: "%.1f %% " % (v * 100), 1.0)],
+                              LaggyParam("Mix", lambda v: "%.1f %% " % (v * 100), 1.0),
+                              RawParam("Tone", lambda v: _hz(v) + "  ", 0.25),
+                              RawParam("Cutoff", lambda v: _hz(v) + "  ", 0.25, waking=True)],
                   class_name="PluginDevice")
 
 

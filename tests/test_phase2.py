@@ -321,6 +321,16 @@ def main():
         check("lagging plugin: wrong unit refused and value restored",
               r["errors"] and "not hz" in r["errors"][0]["error"]
               and abs(song.tracks[vox].devices[dv].parameters[1].value - before) < 1e-5)
+        # a control showing bare raw numbers must never be steered by them (it once went to max)
+        tone = song.tracks[vox].devices[dv].parameters[4]
+        r = ms.set_device_parameters(vox, dv, [S(parameter="Tone", value="113 Hz")])
+        check("raw-number display refused, value restored",
+              r["errors"] and "raw numbers" in r["errors"][0]["error"] and abs(tone.value - 0.25) < 1e-6)
+        # ...but one that starts reporting once moved gets calibrated normally
+        r = ms.set_device_parameters(vox, dv, [S(parameter="Cutoff", value="180 Hz")])
+        got = r["set"][0] if r["set"] else {}
+        check("waking plugin calibrated to target", not r["errors"] and got.get("calibrated")
+              and abs(float(got["display"].split()[0]) - 180) <= 10)
 
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
