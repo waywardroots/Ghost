@@ -138,8 +138,11 @@ class CommandHandler(object):
         tracks = self._tracks()
         info = {}
         if _safe(track, "is_foldable", False):
+            # Compare with ==, not `is`: Live returns a new Python wrapper on every
+            # property read, so the same track is never the identical object.
             info["group_members"] = [i for i, t in enumerate(tracks)
-                                     if _safe(t, "group_track", None) is track]
+                                     if _safe(t, "is_grouped", False)
+                                     and _safe(t, "group_track", None) == track]
         parent = _safe(track, "group_track", None) if _safe(track, "is_grouped", False) else None
         if parent is not None and parent in tracks:
             info["in_group"] = tracks.index(parent)
