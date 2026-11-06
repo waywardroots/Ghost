@@ -716,46 +716,59 @@ class CommandHandler(object):
         return {"placed": os.path.basename(path), "start_bar": bar, "method": "via session"}
 
     def cmd_automate(self, track_index, device_index, parameter, points, clip_index=0,
-                     step_beats=0.25):
+                     step_beats=0.25, lanes=None):
         """Draw automation onto the Arrangement between the first and last point.
 
         Live only lets scripts draw into Session clips, so for each stretch of the timeline
         Ghost copies the track's Session clip (clip_index) into a spare slot, draws the
         automation into that copy, places the copy on the timeline (replacing what was there)
-        and removes the spare copy. points: [{bar, value}], value = raw or display text."""
+        and removes the spare copy. points: [{bar, value}], value = raw or display text.
+        lanes: more [{device_index, parameter, points}] drawn into the same clips, so several
+        parameters can move together. Automation already on the replaced clips is kept where
+        Live lets Ghost read it."""
         song, track = self.song, self._track(track_index)
-        d = self._device(track_index, device_index)
-        p = self._find_param(d, list(d.parameters), parameter)
         src = self._slot(track, clip_index)
         if not src.has_clip:
             raise CommandError("track %d has no Session clip in slot %d to carry the automation"
                                % (track_index, clip_index))
-        if not isinstance(points, (list, tuple)) or len(points) < 2:
-            raise CommandError("give at least two points")
         bpb = self._beats_per_bar()
-        old = float(p.value)
-        try:
-            pts = sorted(((float(pt["bar"]) - 1) * bpb, params_mod.resolve(p, pt["value"]))
-                         for pt in points)
-        except params_mod.ParamError as e:
-            raise CommandError(str(e))
-        finally:
-            p.value = old  # resolving may probe the parameter; put it back
-        t0, t1 = pts[0][0], pts[-1][0]
-        if t1 <= t0:
-            raise CommandError("points must span some time")
+        specs = [{"device_index": device_index, "parameter": parameter, "points": points}]
+        specs += list(lanes or [])
+        drawn = []  # (param, device, pts)
+        for spec in specs:
+            d = self._device(track_index, int(spec["device_index"]))
+            p = self._find_param(d, list(d.parameters), spec["parameter"])
+            if any(q is p for q, _, _ in drawn):
+                raise CommandError("%s is listed twice" % p.name)
+            pts_in = spec.get("points")
+            if not isinstance(pts_in, (list, tuple)) or len(pts_in) < 2:
+                raise CommandError("give at least two points for %s" % p.name)
+            old = float(p.value)
+            try:
+                pts = sorted(((float(pt["bar"]) - 1) * bpb, params_mod.resolve(p, pt["value"]))
+                             for pt in pts_in)
+            except params_mod.ParamError as e:
+                raise CommandError(str(e))
+            finally:
+                p.value = old  # resolving may probe the parameter; put it back
+            if pts[-1][0] <= pts[0][0]:
+                raise CommandError("points for %s must span some time" % p.name)
+            drawn.append((p, d, pts))
+        t0 = min(pts[0][0] for _, _, pts in drawn)
+        t1 = max(pts[-1][0] for _, _, pts in drawn)
 
-        def value_at(t):
+        def value_at(pts, t):
             for (a, va), (b, vb) in zip(pts, pts[1:]):
                 if a <= t <= b:
                     return va if b == a else va + (vb - va) * (t - a) / (b - a)
-            return pts[-1][1] if t > t1 else pts[0][1]
+            return pts[-1][1] if t > pts[-1][0] else pts[0][1]
 
         length = float(src.clip.length)
         step = max(0.0625, float(step_beats))
         made_scene, placed, steps = False, 0, 0
-        others = [q for q in self._automatable(track) if q is not p]
-        kept = set()
+        mine = [q for q, _, _ in drawn]
+        others = [q for q in self._automatable(track) if not any(q is m for m in mine)]
+        kept, found_old = set(), 0
         free = [s for s in track.clip_slots if not s.has_clip]
         if not free:
             song.create_scene(-1)
@@ -767,19 +780,21 @@ class CommandHandler(object):
             while start < t1 - 1e-9:
                 src.duplicate_clip_to(tmp)
                 clip = tmp.clip
-                env = clip.automation_envelope(p) or clip.create_automation_envelope(p)
-                if env is None:
-                    raise CommandError("Live won't automate %s here" % p.name)
                 # Keep automation already drawn on the clip being replaced (other lanes).
                 old = self._arrangement_clip_at(track, start)
                 if old is not None:
+                    found_old += 1
                     kept.update(self._copy_envelopes(old, clip, others, length, step))
-                t = 0.0
-                while t < length - 1e-9:
-                    st = min(step, length - t)
-                    env.insert_step(t, st, value_at(start + t + st / 2))
-                    steps += 1
-                    t += st
+                for p, _, pts in drawn:
+                    env = clip.automation_envelope(p) or clip.create_automation_envelope(p)
+                    if env is None:
+                        raise CommandError("Live won't automate %s here" % p.name)
+                    t = 0.0
+                    while t < length - 1e-9:
+                        st = min(step, length - t)
+                        env.insert_step(t, st, value_at(pts, start + t + st / 2))
+                        steps += 1
+                        t += st
                 track.duplicate_clip_to_arrangement(clip, start)
                 tmp.delete_clip()
                 placed += 1
@@ -789,12 +804,16 @@ class CommandHandler(object):
                 tmp.delete_clip()
             if made_scene:
                 song.delete_scene(len(list(song.scenes)) - 1)
-        p.value = pts[-1][1]  # rest at the end value outside the automated clips
+        for p, _, pts in drawn:
+            p.value = pts[-1][1]  # rest at the end value outside the automated clips
+        p, d, _ = drawn[0]
         out = {"parameter": p.name, "device": d.name, "clips_placed": placed, "steps": steps,
                "ends_at": params_mod.display(p), "start_bar": t0 / bpb + 1,
-               "end_bar": (t0 + placed * length) / bpb + 1}
-        if kept:
-            out["kept_automation"] = sorted(kept)
+               "end_bar": (t0 + placed * length) / bpb + 1,
+               "replaced_clips": found_old, "kept_automation": sorted(kept)}
+        if len(drawn) > 1:
+            out["lanes"] = [{"parameter": q.name, "device": dd.name,
+                             "ends_at": params_mod.display(q)} for q, dd, _ in drawn]
         return out
 
     def _automatable(self, track):

@@ -416,18 +416,30 @@ class AutoPoint(BaseModel):
     value: float | str = Field(description="raw value, or display text like '200 Hz', '18 kHz', '-12 dB', '40 %'")
 
 
+class AutoLane(BaseModel):
+    device_index: int
+    parameter: str
+    points: list[AutoPoint]
+
+
 @tool()
 def automate(track_index: int, device_index: int, parameter: str, points: list[AutoPoint],
-             clip_index: int = 0, step_beats: float = 0.25) -> dict:
+             clip_index: int = 0, step_beats: float = 0.25,
+             lanes: list[AutoLane] | None = None) -> dict:
     """Draw automation (filter sweeps, volume rises, reverb throws) onto the Arrangement between
     the first and last point, joining points with straight lines. Live only allows drawing into
     Session clips, so Ghost re-places copies of the track's Session clip (clip_index) over that
     stretch with the automation inside - pick the clip that plays there. Add the device first
     (e.g. load_device 'Auto Filter'). End sweeps on the value the device should rest at,
-    because the parameter stays there afterwards."""
+    because the parameter stays there afterwards.
+    lanes: more parameters on the same track to move in the same stretch (e.g. delay mix and
+    feedback together). Re-placing clips can drop automation drawn earlier on them, so when
+    several parameters move over the same bars, draw them in ONE call with lanes.
+    replaced_clips/kept_automation report what was found and carried over."""
     return live.send("automate", track_index=track_index, device_index=device_index,
                      parameter=parameter, points=[p.model_dump() for p in points],
-                     clip_index=clip_index, step_beats=step_beats)
+                     clip_index=clip_index, step_beats=step_beats,
+                     lanes=[l.model_dump() for l in lanes] if lanes else None)
 
 
 def _at_playhead(beat: float, **kw) -> dict:

@@ -306,6 +306,17 @@ def main():
               r2.get("kept_automation") == ["Filter Cutoff"] and kept_env is not None
               and kept_env.value_at(0.1) < kept_env.value_at(15.9)
               and clip9.envelopes.get(id(res)) is not None)
+        vol = dev.parameters[7]
+        r3 = ms.automate(bass, 0, "Amp Attack", [P(bar=9, value="5 ms"), P(bar=13, value="50 ms")],
+                         lanes=[ms.AutoLane(device_index=0, parameter="Master Volume",
+                                            points=[P(bar=9, value=0.2), P(bar=13, value=0.8)])])
+        clip9 = [c for c in song.tracks[bass].arrangement_clips if abs(c.start_time - 32) < 1e-3][0]
+        ve = clip9.envelopes.get(id(vol))
+        check("lanes draw several parameters in one pass",
+              len(r3.get("lanes", [])) == 2 and ve is not None
+              and ve.value_at(0.1) < ve.value_at(15.9)
+              and clip9.envelopes.get(id(dev.parameters[3])) is not None
+              and "Filter Cutoff" in r3["kept_automation"] and abs(vol.value - 0.8) < 1e-6)
         expect_error("bad unit explained", ms.automate, bass, 0, "Filter Cutoff",
                      [P(bar=9, value="3 dB"), P(bar=13, value="1 kHz")], contains="not db")
 
