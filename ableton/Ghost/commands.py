@@ -1083,8 +1083,11 @@ class CommandHandler(object):
         play_from = float(song.current_song_time)
         start = play_from + bpb  # one bar of run-up, like pressing Play a bar early
         state["play_from"], state["rec_start"], state["rec_end"] = play_from, start, start + beats
+        # continue_playing plays from the playhead Ghost set (start_playing uses Live's start
+        # marker, which setting the time doesn't move); record goes on once it is rolling, in the
+        # run-up bar, so it can't change where playback starts.
+        song.continue_playing()
         song.record_mode = True
-        song.start_playing()
 
     def _restore_transport(self, st):
         song = self.song
@@ -1124,6 +1127,9 @@ class CommandHandler(object):
         if st.get("mix"):
             song = self.song
             now = float(song.current_song_time)
+            if song.is_playing and now < st["play_from"] - 0.01:
+                raise CommandError("Live started playing at beat %.2f, not at Ghost's run-up "
+                                   "(beat %.2f)" % (now, st["play_from"]))
             if song.is_playing and now < st["rec_end"] + 0.25:
                 return {"done": False, "beat": now, "until": st["rec_end"]}
             song.stop_playing()

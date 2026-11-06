@@ -342,7 +342,8 @@ class Song:
         self.back_to_arranger = False
         self.clip_trigger_quantization = 4
         self.loop, self.loop_start, self.loop_length = True, 0.0, 720.0
-        self.punch_in = self.punch_out = self.record_mode = False
+        self.punch_in = self.punch_out = False
+        self._record_mode = False
         self.master_track = Track("other", "Master", 0)
         self.master_track.has_audio_input = False
         self.master_track.can_be_armed = False
@@ -399,9 +400,25 @@ class Song:
         for t in self.tracks:
             del t.clip_slots[index]
 
-    def start_playing(self):
+    def start_playing(self):  # plays from Live's start marker
+        self._song_time = getattr(self, "start_marker", 0.0)
         self.is_playing = True
-        if self.record_mode:  # Arrangement recording from the playhead
+
+    def continue_playing(self):
+        self.is_playing = True
+
+    @property
+    def record_mode(self):
+        return self._record_mode
+
+    @record_mode.setter
+    def record_mode(self, v):
+        self._record_mode = v
+        if v and self.is_playing:
+            self._record_now()
+
+    def _record_now(self):
+        if True:  # Arrangement recording from the playhead
             armed = [t for t in self.tracks if getattr(t, "arm", False)]
             assert len(armed) == 1, "only Ghost's own track may be armed while recording"
             rec = armed[0]
