@@ -406,6 +406,7 @@ class Song:
             assert len(armed) == 1, "only Ghost's own track may be armed while recording"
             rec = armed[0]
             assert rec.input_routing_type.display_name == "Resampling"
+            assert not self.loop, "with the loop on, Live records from the loop start"
             assert not self.back_to_arranger, "tracks must follow the Arrangement"
             soloed = [t for t in self.tracks if t.solo]
             src = soloed[0] if soloed else [t for t in self.tracks if t.has_midi_input and t.devices][0]

@@ -861,8 +861,12 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
     if bar is not None:
         bpb = _beats_per_bar()
         _settle_playhead(bar, bpb)
-        start = live.send("start_audition", track_index=track_index, beats=beats,
-                          arrangement=True)
+        try:
+            start = live.send("start_audition", track_index=track_index, beats=beats,
+                              arrangement=True)
+        except LiveError:
+            live.send("end_audition")
+            raise
         _check_start(start, bar)
         return _finish_listen(start, f"track{track_index}_bar{bar:g}",
                               f"Track {track_index} from bar {bar:g}", compare_to)
@@ -883,7 +887,11 @@ def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = Non
     bars = max(1, min(16, int(bars)))
     bpb = _beats_per_bar()
     _settle_playhead(bar, bpb)
-    start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+    try:
+        start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+    except LiveError:
+        live.send("end_audition")
+        raise
     _check_start(start, bar)
     return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
                           loudness=True)
@@ -901,6 +909,11 @@ def _settle_playhead(bar: float, bpb: float) -> None:
     if float(bar) < 2:
         raise LiveError("start from bar 2 or later (Ghost needs one bar of run-up)")
     live.send("stop_playback")
+    live.send("prepare_audition")  # loop off while recording (restored afterwards)
+    for _ in range(20):
+        time.sleep(0.1)
+        if not live.send("get_loop")["loop"]:
+            break
     target = (float(bar) - 2) * bpb
     settled = 0
     for _ in range(40):  # Live moves the playhead on a later update; make sure it stays there
@@ -932,7 +945,9 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
                 break
             time.sleep(0.5)
         else:
-            raise LiveError("the recording didn't finish - is Live's transport running?")
+            where = f" (playhead at beat {r.get('beat')}, waiting for {r.get('until')})" \
+                if r.get("beat") is not None else ""
+            raise LiveError("the recording didn't finish - is Live's transport running?" + where)
         if not r.get("file"):
             raise LiveError(r.get("error") or "Live didn't report a recorded file")
         _wait_for_file(r["file"])

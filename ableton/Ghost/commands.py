@@ -1050,12 +1050,30 @@ class CommandHandler(object):
     # a Session record slot while the Arrangement played left plugin synths silent in the
     # recording on some setups.) The loop and punch settings are left alone: Live applies loop
     # changes late, and moving the loop brace fights its "inside the song" rule.
-    _TRANSPORT = ("record_mode",)
+    _TRANSPORT = ("record_mode", "loop")
+
+    def cmd_prepare_audition(self):
+        """Before recording the Arrangement: switch the loop off (with the loop on, Live records
+        from the loop start instead of the playhead). Live applies it a moment later, so this is
+        its own step; start_audition restores it afterwards."""
+        song = self.song
+        prev = getattr(self, "_prepared", None)
+        loop_was = prev["loop"] if prev else bool(song.loop)
+        self._prepared = {"loop": loop_was}
+        song.loop = False
+        return {"loop_was": loop_was}
+
+    def cmd_get_loop(self):
+        return {"loop": bool(self.song.loop)}
 
     def _start_arrangement_recording(self, state, listen, beats):
         song, bpb = self.song, self._beats_per_bar()
         state["transport"] = dict((k, getattr(song, k)) for k in self._TRANSPORT
                                   if hasattr(song, k))
+        prepared, self._prepared = getattr(self, "_prepared", None), None
+        if prepared:  # the loop was switched off by prepare_audition: restore the user's state
+            state["transport"].update(prepared)
+        song.loop = False
         # nothing of the user's may record: disarm every other track (restored afterwards)
         for t in self._tracks():
             if t is not listen and _safe(t, "can_be_armed", False) and _safe(t, "arm", False):
@@ -1105,8 +1123,9 @@ class CommandHandler(object):
             raise CommandError("no recording is running")
         if st.get("mix"):
             song = self.song
-            if song.is_playing and float(song.current_song_time) < st["rec_end"] + 0.25:
-                return {"done": False, "beat": float(song.current_song_time)}
+            now = float(song.current_song_time)
+            if song.is_playing and now < st["rec_end"] + 0.25:
+                return {"done": False, "beat": now, "until": st["rec_end"]}
             song.stop_playing()
             try:
                 song.record_mode = False
@@ -1128,8 +1147,11 @@ class CommandHandler(object):
         return {"done": True, "file": getattr(slot.clip, "file_path", None)}
 
     def cmd_end_audition(self):
+        prepared, self._prepared = getattr(self, "_prepared", None), None
         if not getattr(self, "_audition", None):
-            return {"cleaned": False}
+            if prepared:  # prepared but never started: put the loop back
+                self.song.loop = prepared["loop"]
+            return {"cleaned": bool(prepared)}
         self._cleanup_audition()
         return {"cleaned": True}
 
