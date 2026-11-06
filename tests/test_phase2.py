@@ -232,6 +232,17 @@ def main():
             finally:
                 song.tracks.pop(0)
             check("group tracks don't break arrangement/session info", ok)
+            g = _Group(); song.tracks.insert(0, g)
+            member = song.tracks[1]; member.is_grouped = True; member.group_track = g
+            try:
+                info = ms.get_session_info()["tracks"]
+                ok = info[0].get("group_members") == [1] and info[1].get("in_group") == 0
+            finally:
+                song.tracks.pop(0); member.is_grouped = False; member.group_track = None
+            check("groups list their member tracks", ok)
+            out = ms.listen_to_track(bass, bar=3, beats=4)
+            check("listen to a track from the Arrangement", "heard" in _j.loads(out[0])
+                  and song.tracks[bass].solo is False and song.back_to_arranger is False)
             m = ms.get_track_info(-1)
             check("master track addressed as -1", m["type"] == "master" and m["clips"] == [])
             check("master volume", abs(ms.set_track_volume(-1, 0.8)["volume"] - 0.8) < 1e-6)

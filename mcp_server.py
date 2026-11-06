@@ -847,14 +847,25 @@ DEFAULT_PHRASE = [  # one long note (tone, movement, sustain), then short ones (
 @tool()
 def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
                     clip_index: Optional[int] = None, beats: float = 8.0,
-                    compare_to: Optional[str] = None):
+                    compare_to: Optional[str] = None, bar: Optional[float] = None):
     """Hear a track: Ghost plays a phrase on it (soloed), records the result inside Live through
     Resampling, measures it (low end per band, brightness, pitch, grit, movement/beating, stereo
     width, attack/sustain) and returns a spectrogram picture. Use after shaping a sound to check
     it. notes: the phrase to play (default: one long C2 then three short notes; use low notes
     like 36 for bass, chords for pads). clip_index: play an existing clip instead.
+    bar: play the Arrangement from that bar with the track soloed instead - works for audio
+    tracks without Session clips and for GROUPS, which the user treats as one sound (a group
+    and its member tracks are mixed and judged together; adjust the group, not one member).
     compare_to: a reference audio file path (e.g. from search_samples) or 'last' for the
     previous listen. Note: this stops Live's playback while it records."""
+    if bar is not None:
+        bpb = _beats_per_bar()
+        _settle_playhead(bar, bpb)
+        start = live.send("start_audition", track_index=track_index, beats=beats,
+                          arrangement=True)
+        _check_start(start, bar)
+        return _finish_listen(start, f"track{track_index}_bar{bar:g}",
+                              f"Track {track_index} from bar {bar:g}", compare_to)
     if clip_index is None and not notes:
         notes = DEFAULT_PHRASE
     start = live.send("start_audition", track_index=track_index, beats=beats,
@@ -870,28 +881,41 @@ def listen_to_mix(bar: float = 1, bars: int = 8, compare_to: Optional[str] = Non
     full mix. bars: up to 16. compare_to: a reference track path (e.g. from
     find_reference_tracks) or 'last'. Stops Live's playback while it records."""
     bars = max(1, min(16, int(bars)))
+    bpb = _beats_per_bar()
+    _settle_playhead(bar, bpb)
+    start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+    _check_start(start, bar)
+    return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
+                          loudness=True)
+
+
+def _beats_per_bar() -> float:
     info = live.send("get_session_info")
     num, den = (float(x) for x in str(info.get("time_signature", "4/4")).split("/"))
-    bpb = num * 4.0 / den  # Live counts quarter-note beats
+    return num * 4.0 / den  # Live counts quarter-note beats
+
+
+def _settle_playhead(bar: float, bpb: float) -> None:
+    """Move the playhead to a bar and wait until Live has really put it there."""
     target = (float(bar) - 1) * bpb
     settled = 0
     for _ in range(40):  # Live moves the playhead on a later update; make sure it stays there
-        live.send("set_song_time", beat=target) if settled == 0 else None
+        if settled == 0:
+            live.send("set_song_time", beat=target)
         time.sleep(0.12)
         now = live.send("get_song_time")["beat"]
         settled = settled + 1 if abs(now - target) < 1e-3 else 0
         if settled >= 3:
-            break
-    else:
-        raise LiveError(f"Live's playhead didn't stay at bar {bar:g}; is a dialog open in Live?")
-    start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+            return
+    raise LiveError(f"Live's playhead didn't stay at bar {bar:g}; is a dialog open in Live?")
+
+
+def _check_start(start: dict, bar: float) -> None:
     if abs(float(start.get("from_bar", bar)) - float(bar)) > 1e-3:
         try:
             live.send("end_audition")
         finally:
             raise LiveError(f"playback started at bar {start.get('from_bar')} instead of {bar:g}")
-    return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
-                          loudness=True)
 
 
 def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],

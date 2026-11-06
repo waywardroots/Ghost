@@ -133,8 +133,25 @@ class CommandHandler(object):
             return "audio"
         return "other"
 
+    def _group_info(self, track):
+        """Groups make one sound: list a group's member tracks, and a member's group."""
+        tracks = self._tracks()
+        info = {}
+        if _safe(track, "is_foldable", False):
+            info["group_members"] = [i for i, t in enumerate(tracks)
+                                     if _safe(t, "group_track", None) is track]
+        parent = _safe(track, "group_track", None) if _safe(track, "is_grouped", False) else None
+        if parent is not None and parent in tracks:
+            info["in_group"] = tracks.index(parent)
+        return info
+
     def _track_summary(self, index, track):
         is_master = track is getattr(self.song, "master_track", None)
+        out = self._track_summary_base(index, track, is_master)
+        out.update(self._group_info(track))
+        return out
+
+    def _track_summary_base(self, index, track, is_master):
         return {
             "index": index,
             "name": track.name,
@@ -934,8 +951,12 @@ class CommandHandler(object):
     # Ghost records a track through Live's "Resampling" input so it can analyze the result.
     LISTEN_TRACK = "Ghost Listen"
 
-    def cmd_start_audition(self, track_index, beats=8.0, notes=None, clip_index=None):
-        """Play a phrase on a track (soloed) and record it on a temporary Resampling track."""
+    def cmd_start_audition(self, track_index, beats=8.0, notes=None, clip_index=None,
+                           arrangement=False):
+        """Play a phrase on a track (soloed) and record it on a temporary Resampling track.
+        arrangement=True plays the Arrangement from the playhead instead (set it first), with
+        the track soloed - for a group that is all its member tracks, as one sound.
+        track_index -1 records the whole mix."""
         if getattr(self, "_audition", None):
             raise CommandError("a recording is already running; call finish_audition first")
         beats = float(beats)
@@ -948,7 +969,8 @@ class CommandHandler(object):
                  "created_scene": None, "src_slot": None, "temp_clip": False, "mix": mix}
 
         # what to play
-        if mix:  # the whole Arrangement from the playhead (set it with set_song_time first)
+        if mix or arrangement:  # the Arrangement from the playhead (set it with set_song_time)
+            state["mix"] = True
             self._back_to_arrangement()
             song.create_scene(-1)
             state["created_scene"] = len(list(song.scenes)) - 1
@@ -1011,7 +1033,7 @@ class CommandHandler(object):
         self._audition = state
         seconds = (beats + 4.0) * 60.0 / float(song.tempo)  # + up to one bar of launch delay
         out = {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
-        if mix:
+        if state["mix"]:
             out["from_bar"] = round(float(song.current_song_time) / self._beats_per_bar() + 1, 3)
         return out
 
