@@ -563,6 +563,73 @@ class CommandHandler(object):
                     removed += 1
         return {"removed": removed}
 
+    def cmd_rearrange(self, moves, track_indices=None):
+        """Move whole sections of the Arrangement: each move copies every clip that starts in
+        bars from_bar..to_bar (to_bar exclusive) on the chosen tracks to new_bar, with its
+        automation. A section can be used twice (e.g. a breakdown repeated), and bars that no
+        move covers are dropped. Safe order: everything is copied to a spare area past the
+        end first, so nothing is deleted unless all copies worked."""
+        bpb = self._beats_per_bar()
+        moves = [(float(m["from_bar"]), float(m["to_bar"]), float(m["new_bar"])) for m in moves]
+        if not moves:
+            raise CommandError("no moves given")
+        for a, b, n in moves:
+            if b <= a or a < 1 or n < 1:
+                raise CommandError("each move needs from_bar < to_bar and bars from 1")
+        new = sorted((n, n + (b - a)) for a, b, n in moves)
+        for (s1, e1), (s2, e2) in zip(new, new[1:]):
+            if s2 < e1 - 1e-9:
+                raise CommandError("two moves land on the same bars (%g-%g and %g-%g)"
+                                   % (s1, e1, s2, e2))
+        tracks = ([self._track(i) for i in track_indices] if track_indices is not None
+                  else list(self.song.tracks))
+        for tr in tracks:
+            if not hasattr(tr, "delete_clip"):
+                raise CommandError("this version of Live can't move Arrangement clips from a "
+                                   "script (needs Live 12)")
+        song_end = 0.0
+        for tr in tracks:
+            for c in list(getattr(tr, "arrangement_clips", []) or []):
+                song_end = max(song_end, float(c.end_time))
+        stage = (int(song_end / bpb) + 64) * bpb  # spare area well past the last clip
+        staged, originals = [], []
+        try:
+            for tr in tracks:
+                clips = list(getattr(tr, "arrangement_clips", []) or [])
+                originals.append((tr, clips))
+                for a, b, n in moves:
+                    t0, t1 = (a - 1) * bpb, (b - 1) * bpb
+                    for c in clips:
+                        s = float(c.start_time)
+                        if t0 - 1e-6 <= s < t1 - 1e-6:
+                            dest = stage + (n - 1) * bpb + (s - t0)
+                            tr.duplicate_clip_to_arrangement(c, dest)
+                            staged.append((tr, dest))
+        except Exception as e:
+            self._delete_starting_at(staged)
+            raise CommandError("couldn't copy the sections (%s); nothing was changed" % e)
+        removed = 0
+        for tr, clips in originals:
+            for c in clips:
+                tr.delete_clip(c)
+                removed += 1
+        placed = 0
+        for tr, dest in staged:
+            c = self._arrangement_clip_at(tr, dest)
+            if c is None:
+                continue
+            tr.duplicate_clip_to_arrangement(c, dest - stage)
+            tr.delete_clip(c)
+            placed += 1
+        end_bar = max(e for _, e in new)
+        return {"clips_moved": placed, "clips_before": removed, "new_end_bar": end_bar}
+
+    def _delete_starting_at(self, staged):
+        for tr, dest in staged:
+            c = self._arrangement_clip_at(tr, dest)
+            if c is not None:
+                tr.delete_clip(c)
+
     def cmd_get_drum_pads(self, track_index):
         """Which sounds sit on which notes in a track's Drum Rack."""
         track = self._track(track_index)

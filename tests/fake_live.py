@@ -265,6 +265,8 @@ class Track:
         ac = ArrClip(clip.name, t, length)
         import copy as _copy
         ac.envelopes = _copy.deepcopy(getattr(clip, "envelopes", {}))  # envelopes travel with clips
+        if hasattr(clip, "pitch_coarse"):
+            ac.pitch_coarse = clip.pitch_coarse
         self.arrangement_clips.append(ac)
         self.arrangement_clips.sort(key=lambda c: c.start_time)
 
@@ -286,6 +288,10 @@ class ArrClip:
         self.name, self.start_time, self.end_time = name, start, start + length
         self.start_marker = 0.0
         self.envelopes = {}
+
+    @property
+    def length(self):
+        return self.end_time - self.start_time
 
     def automation_envelope(self, param):
         return self.envelopes.get(id(param))

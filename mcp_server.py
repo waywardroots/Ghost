@@ -355,6 +355,23 @@ def clear_arrangement(track_indices: list[int], from_bar: float = 1,
                      to_bar=to_bar)
 
 
+class Move(BaseModel):
+    from_bar: float = Field(description="first bar of the section as it is now")
+    to_bar: float = Field(description="bar where it ends now (exclusive)")
+    new_bar: float = Field(description="bar where it should start")
+
+
+@tool()
+def rearrange_arrangement(moves: list[Move], track_indices: Optional[list[int]] = None) -> dict:
+    """Restructure a song: move whole sections of the Arrangement (all tracks, or the listed
+    ones) with their clips and automation. Each move takes the clips that start in
+    from_bar..to_bar and puts them at new_bar. A section may be used twice; bars no move
+    covers are dropped. Nothing is deleted unless every copy works, and Ctrl+Z undoes it.
+    Afterwards set new locators with set_locators(remove_existing=true)."""
+    return live.send("rearrange", moves=[m.model_dump() for m in moves],
+                     track_indices=track_indices)
+
+
 @tool()
 def read_project_arrangement(path: str) -> dict:
     """Map the arrangement of any of the user's Ableton sets (.als) without opening it: tempo,

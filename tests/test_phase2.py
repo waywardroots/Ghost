@@ -348,6 +348,24 @@ def main():
         check("calibration time budget: reports 'send it again', leaves value alone",
               r["errors"] and "send it again" in r["errors"][0]["error"] and decay.value == before)
 
+        # restructure a song: move sections, reuse one twice, drop the rest
+        ra = ms.create_midi_track(name="Rearr")["track_index"]
+        ms.create_clip(ra, 0, length_beats=4, name="bar")
+        ms.place_clip(ra, 0, bar=1, repeats=8)
+        M = ms.Move
+        r = ms.rearrange_arrangement([M(from_bar=1, to_bar=3, new_bar=1),
+                                      M(from_bar=5, to_bar=7, new_bar=3),
+                                      M(from_bar=5, to_bar=7, new_bar=7)], track_indices=[ra])
+        starts = sorted(c.start_time for c in song.tracks[ra].arrangement_clips)
+        check("sections moved, one used twice, the rest dropped",
+              starts == [0, 4, 8, 12, 24, 28] and r["clips_moved"] == 6 and r["new_end_bar"] == 9)
+        check("overlapping moves refused, nothing changed",
+              "error" in ms.rearrange_arrangement([M(from_bar=1, to_bar=5, new_bar=1),
+                                                   M(from_bar=1, to_bar=3, new_bar=3)],
+                                                  track_indices=[ra])
+              and sorted(c.start_time for c in song.tracks[ra].arrangement_clips) == starts)
+        ms.delete_track(ra)
+
         # your-style patterns: one of the user's F minor basslines written into D minor
         import json as _json, tempfile as _tf
         lib_file = Path(_tf.mkdtemp()) / "set.jsonl"
