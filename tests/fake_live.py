@@ -341,7 +341,8 @@ class Song:
         self._pending_time = None
         self.back_to_arranger = False
         self.clip_trigger_quantization = 4
-        self.loop, self.loop_start, self.loop_length = True, 0.0, 720.0
+        self.loop, self._loop_start, self._loop_length = True, 0.0, 720.0
+        self.song_length = 720.0
         self.punch_in = self.punch_out = self.record_mode = False
         self.master_track = Track("other", "Master", 0)
         self.master_track.has_audio_input = False
@@ -398,6 +399,27 @@ class Song:
         del self.scenes[index]
         for t in self.tracks:
             del t.clip_slots[index]
+
+    # Live keeps the loop brace inside the song
+    @property
+    def loop_start(self):
+        return self._loop_start
+
+    @loop_start.setter
+    def loop_start(self, v):
+        if v + self._loop_length > self.song_length:
+            raise RuntimeError("Cannot set the Loopstart behind the Songlength")
+        self._loop_start = v
+
+    @property
+    def loop_length(self):
+        return self._loop_length
+
+    @loop_length.setter
+    def loop_length(self, v):
+        if self._loop_start + v > self.song_length:
+            raise RuntimeError("Cannot set the Looplength behind the Songlength")
+        self._loop_length = v
 
     def start_playing(self):
         self.is_playing = True

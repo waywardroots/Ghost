@@ -1062,6 +1062,8 @@ class CommandHandler(object):
         start = play_from + bpb  # one bar of run-up, like pressing Play a bar early
         state["play_from"], state["rec_start"], state["rec_end"] = play_from, start, start + beats
         song.loop = False
+        # Live keeps the loop inside the song: shrink it before moving it
+        song.loop_length = min(float(beats), float(song.loop_length))
         song.loop_start = start
         song.loop_length = beats
         song.punch_in = True
@@ -1071,10 +1073,16 @@ class CommandHandler(object):
 
     def _restore_transport(self, st):
         song = self.song
+        tr = st.get("transport", {})
+        if "loop_length" in tr:  # shrink first so the loop can move anywhere (see above)
+            try:
+                song.loop_length = min(float(tr["loop_length"]), float(song.loop_length))
+            except Exception:
+                pass
         for k in ("record_mode", "punch_in", "punch_out", "loop_start", "loop_length", "loop"):
-            if k in st.get("transport", {}):
+            if k in tr:
                 try:
-                    setattr(song, k, st["transport"][k])
+                    setattr(song, k, tr[k])
                 except Exception:
                     pass
         st["transport"] = {}
