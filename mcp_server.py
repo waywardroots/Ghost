@@ -383,11 +383,14 @@ def place_clip(track_index: int, clip_index: int, bar: float, repeats: int = 1) 
 
 
 @tool()
-def place_audio_clip(track_index: int, path: str, bar: float) -> dict:
-    """Put an audio file (e.g. a riser, impact or downlifter found with search_samples) onto an
+def place_audio_clip(track_index: int, path: str, bar: float, transpose: int = 0,
+                     repeats: int = 1) -> dict:
+    """Put an audio file (e.g. a riser, impact, vocal or loop found with search_samples) onto an
     audio track's Arrangement timeline at a bar. Risers usually END on the drop: start them
-    their length before it."""
-    return live.send("place_audio_clip", track_index=track_index, path=path, bar=bar)
+    their length before it. transpose: semitones (e.g. 2 to move a C loop to D).
+    repeats: copies placed back to back (a loop across a whole section)."""
+    return live.send("place_audio_clip", track_index=track_index, path=path, bar=bar,
+                     transpose=transpose, repeats=repeats)
 
 
 class AutoPoint(BaseModel):

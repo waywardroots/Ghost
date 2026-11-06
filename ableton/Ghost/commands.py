@@ -588,17 +588,44 @@ class CommandHandler(object):
         return {"placed": slot.clip.name, "start_bar": bar,
                 "end_bar": round((t + int(repeats) * length) / bpb + 1, 3)}
 
-    def cmd_place_audio_clip(self, track_index, path, bar):
-        """Put an audio file (riser, impact, vocal...) on an audio track's timeline at a bar."""
+    def _arrangement_clip_at(self, track, t):
+        for c in list(getattr(track, "arrangement_clips", []) or []):
+            if abs(float(c.start_time) - t) < 1e-3:
+                return c
+        return None
+
+    def cmd_place_audio_clip(self, track_index, path, bar, transpose=0, repeats=1):
+        """Put an audio file (riser, impact, vocal, loop...) on an audio track's timeline at a
+        bar, optionally transposed (semitones) and repeated back to back."""
         track = self._track(track_index)
         if self._track_type(track) != "audio":
             raise CommandError("track %d is not an audio track" % track_index)
         if not os.path.isfile(path):
             raise CommandError("file not found: %s" % path)
-        t = (float(bar) - 1) * self._beats_per_bar()
+        transpose, repeats = int(transpose), max(1, int(repeats))
+        if not -48 <= transpose <= 48:
+            raise CommandError("transpose must be between -48 and 48 semitones")
+        bpb = self._beats_per_bar()
+        t = (float(bar) - 1) * bpb
         if hasattr(track, "create_audio_clip"):  # Live 12: straight onto the timeline
-            track.create_audio_clip(path, t)
-            return {"placed": os.path.basename(path), "start_bar": bar, "method": "direct"}
+            placed = []
+            for _ in range(repeats):
+                clip = track.create_audio_clip(path, t) or self._arrangement_clip_at(track, t)
+                if clip is None:
+                    break
+                if transpose:
+                    clip.pitch_coarse = transpose
+                placed.append(clip)
+                t = float(clip.end_time)
+            out = {"placed": os.path.basename(path), "start_bar": bar, "method": "direct",
+                   "copies": len(placed)}
+            if placed:
+                out["end_bar"] = round(float(placed[-1].end_time) / bpb + 1, 3)
+            if transpose:
+                out["transpose"] = transpose
+            return out
+        if transpose or repeats > 1:
+            raise CommandError("transpose and repeats need Live 12")
         # Otherwise: load it into a spare Session slot, copy it to the timeline, clean up
         song = self.song
         made_scene = False

@@ -275,6 +275,14 @@ def main():
         check("audio file onto the timeline", r["method"] == "direct" and
               any(c.name == "Riser 01.wav" and c.start_time == 16 for c in song.tracks[vox].arrangement_clips))
         expect_error("audio only on audio tracks", ms.place_audio_clip, bass, fx, 1, contains="not an audio track")
+        r = ms.place_audio_clip(vox, fx, bar=21, transpose=2, repeats=3)
+        loops = sorted((c for c in song.tracks[vox].arrangement_clips if c.start_time >= 80),
+                       key=lambda c: c.start_time)
+        check("loop placed back to back, transposed", r["copies"] == 3 and r["end_bar"] == 24
+              and [c.start_time for c in loops] == [80, 84, 88]
+              and all(getattr(c, "pitch_coarse", 0) == 2 for c in loops))
+        expect_error("transpose range checked", ms.place_audio_clip, vox, fx, 30, transpose=60,
+                     contains="between -48 and 48")
         P = ms.AutoPoint
         r = ms.automate(bass, 0, "Filter Cutoff", [P(bar=9, value="200 Hz"), P(bar=13, value="10 kHz")])
         dev = song.tracks[bass].devices[0]

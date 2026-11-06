@@ -250,6 +250,7 @@ class Track:
         assert os.path.isfile(path)
         c = Clip(4.0, is_midi=False, name=os.path.basename(path))
         self.duplicate_clip_to_arrangement(c, time)
+        return self.arrangement_clips[-1]
 
     def delete_clip(self, clip):
         self.arrangement_clips.remove(clip)
