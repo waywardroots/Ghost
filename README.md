@@ -103,5 +103,19 @@ Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's pla
 ```
 python tests/test_phase2.py
 python tests/test_presets.py
+python tests/test_midi_dataset.py
 ```
-Runs the full chain against a simulated Live, plus preset-file tests (145 checks).
+Runs the full chain against a simulated Live, plus preset-file and dataset tests (152 checks).
+
+---
+
+## Phase 3: Your-style MIDI model
+
+### Step 1: build the training set
+```
+py -3.13 midi_dataset.py
+```
+Reads the MIDI clips in every project the indexer found and saves each unique clip to
+`MusicAssistant\midi_dataset.jsonl`: its notes, track role (drums, bass, chords, pad, lead,
+arp), instrument, tempo and key. Copies of the same clip across the arrangement count once.
+Add `--stats` to see a summary again later. Projects are only read, never changed.
