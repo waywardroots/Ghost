@@ -104,8 +104,9 @@ Recordings are copied to `MusicAssistant\listening\`. Listening stops Live's pla
 python tests/test_phase2.py
 python tests/test_presets.py
 python tests/test_midi_dataset.py
+python tests/test_style.py
 ```
-Runs the full chain against a simulated Live, plus preset-file and dataset tests (152 checks).
+Runs the full chain against a simulated Live, plus preset-file, dataset and pattern tests (170 checks).
 
 ---
 
@@ -119,3 +120,19 @@ Reads the MIDI clips in every project the indexer found and saves each unique cl
 `MusicAssistant\midi_dataset.jsonl`: its notes, track role (drums, bass, chords, pad, lead,
 arp), instrument, tempo and key. Copies of the same clip across the arrangement count once.
 Add `--stats` to see a summary again later. Projects are only read, never changed.
+
+Clips are sorted by what they do. A track named "Bass", "Pad" or "Stab" says so; for the
+many named "MIDI" or after their synth, Ghost reads the notes: chords (notes starting
+together), pads (held chords), arps (fast even runs), bass and lead (single lines, by
+register) and fx (one long held note).
+
+### Step 2: write in your style
+Ask for parts the way you'd describe them: *"give me one of my rolling D-minor basslines for
+this track"*, *"find my Diva arps around 125"*, *"use my drum groove from Night Drive"*.
+
+- `find_my_patterns` searches your parts by role, key, tempo, length, instrument or song name
+  (and can leave out the song you're working on).
+- `write_my_pattern` writes one into a clip: moved into the song's key (drums stay as they
+  are), fitted to the length, and varied a little so it's a new take in your style rather
+  than a copy. `variation` 0 = exact, 0.3 = fresh take, 1 = loose; a different `seed`
+  gives a different take.

@@ -45,8 +45,8 @@ bass_notes = [(38, 0, 0.5, 110), (41, 1, 0.5, 100), (45, 2, 0.5, 100), (49, 3, 0
               (38, 3.5, 0.25, 60, False), (38, 5, 0.5, 100)]
 bass = clip("Roller", bass_notes, loop=(0, 4))
 bass_copy = clip("Roller", bass_notes, loop=(0, 4), start=16, end=20)  # same clip on the timeline
-chords = clip("Dm", [(62, 0, 4, 80), (65, 0, 4, 80), (69, 0, 4, 80), (67, 4, 4, 80),
-                     (70, 4, 4, 80), (74, 4, 4, 80)], loop=(0, 8))  # Dm, Gm
+chords = clip("Dm", [(62, 0, 0.5, 80), (65, 0, 0.5, 80), (69, 0, 0.5, 80), (67, 4, 0.5, 80),
+                     (70, 4, 0.5, 80), (74, 4, 0.5, 80)], loop=(0, 8))  # Dm, Gm stabs
 drums = clip("Beat", [(36, 0, 0.25, 127), (36, 1, 0.25, 127), (42, 0.5, 0.1, 90)])
 xml = ('<?xml version="1.0"?><Ableton Creator="Ableton Live 12.1"><LiveSet><Tracks>'
        + track("Bass", [bass, bass_copy], serum)
@@ -71,11 +71,16 @@ with tempfile.TemporaryDirectory() as d:
     check("drum rack track read as drums", by["909"]["role"] == "drums"
           and by["909"]["instrument"] == "DrumGroupDevice")
     check("project key found (D minor)", b["key"] == "D minor")
+    check("held chords read as pad, a long single note as fx",
+          md.note_role([[62, 0, 4, 80], [65, 0, 4, 80], [69, 0, 4, 80]], 4) == "pad"
+          and md.note_role([[50, 0, 16, 100]], 16) == "fx")
+    check("fast even single notes read as arp",
+          md.note_role([[62 + (i % 4) * 3, i * 0.25, 0.2, 90] for i in range(16)], 4) == "arp")
 
     out = Path(d) / "set.jsonl"
     md.main(["--projects", d, "--out", str(out)])
     lines = [json.loads(x) for x in out.read_text().splitlines()]
     check("dataset file written", len(lines) == 3 and all("notes" in x for x in lines))
 
-print(f"\nAll {7 - len(FAILS)} of 7 checks passed." if not FAILS else f"\n{len(FAILS)} FAILED")
+print(f"\nAll {9 - len(FAILS)} of 9 checks passed." if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

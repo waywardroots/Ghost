@@ -348,6 +348,23 @@ def main():
         check("calibration time budget: reports 'send it again', leaves value alone",
               r["errors"] and "send it again" in r["errors"][0]["error"] and decay.value == before)
 
+        # your-style patterns: one of the user's F minor basslines written into D minor
+        import json as _json, tempfile as _tf
+        lib_file = Path(_tf.mkdtemp()) / "set.jsonl"
+        lib_file.write_text(_json.dumps(dict(
+            id="b1", project="C:/p/Night.als", track="MIDI", clip="", role="bass",
+            instrument="Diva", tempo=125, key="F minor", length_beats=4,
+            notes=[[41, 0, 0.5, 110], [44, 1.5, 0.5, 100], [48, 3, 0.5, 100]])))
+        ms.STYLE_LIB = ms.style.Library(lib_file)
+        found = ms.find_my_patterns("bass", key="D minor", tempo=128)
+        r = ms.write_my_pattern(bass, 6, found[0]["id"], key="D minor", bars=2, variation=0)
+        got = ms.get_notes(bass, 6)
+        check("your-style pattern written in the song's key",
+              r["transposed"] == -3 and got["clip_length_beats"] == 8
+              and [n["pitch"] for n in got["notes"]][:3] == [38, 41, 45] and len(got["notes"]) == 6)
+        check("pattern errors come back as messages",
+              "error" in ms.write_my_pattern(bass, 7, "missing-id"))
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)

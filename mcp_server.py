@@ -26,6 +26,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from indexer import app_dir, build_profile, normalize_key_query, open_db  # noqa: E402
 import presets  # noqa: E402
+import style  # noqa: E402
 
 import listen  # noqa: E402
 
@@ -929,6 +930,48 @@ def get_style_profile() -> dict:
     """How the user makes music, learned from their own projects: usual tempos and keys,
     favourite plugins and Live devices per track type, go-to samples."""
     return build_profile(_db())
+
+
+# ---- your-style patterns (Phase 3) ------------------------------------------
+STYLE_LIB = style.Library(Path(os.environ.get("GHOST_MIDI_DATASET",
+                                              str(app_dir() / "midi_dataset.jsonl"))))
+
+
+@tool()
+def find_my_patterns(role: str, key: Optional[str] = None, tempo: Optional[float] = None,
+                     bars: Optional[float] = None, instrument: Optional[str] = None,
+                     query: Optional[str] = None, exclude: Optional[str] = None,
+                     limit: int = 10) -> list[dict]:
+    """Search the parts the user wrote in their own projects (built by midi_dataset.py).
+    role: drums, bass, chords, pad, lead, arp or fx. key/tempo/bars rank the closest fits
+    first (pitched parts in other keys still match and say how far to transpose).
+    instrument filters by plugin (e.g. 'Diva'); query by project/track/clip name; exclude
+    leaves out projects whose name contains it (e.g. the song being worked on).
+    Use the returned id with write_my_pattern."""
+    return STYLE_LIB.find(role, key=key, tempo=tempo, bars=bars, instrument=instrument,
+                          query=query, exclude=exclude, limit=max(1, min(int(limit), 50)))
+
+
+@tool()
+def write_my_pattern(track_index: int, clip_index: int, pattern_id: str,
+                     key: Optional[str] = None, bars: Optional[float] = None,
+                     variation: float = 0.3, octave: int = 0, seed: Optional[int] = None,
+                     name: Optional[str] = None, overwrite: bool = False) -> dict:
+    """Write a new clip in the user's style from one of their own patterns (find_my_patterns):
+    moved into key (pitched parts; drums stay as they are), fitted to bars, and varied by
+    variation (0 = exact copy, 0.3 = a fresh take, 1 = loose). octave shifts by octaves.
+    A different seed gives a different take. overwrite replaces a clip already in the slot."""
+    c = STYLE_LIB.get(pattern_id)
+    notes, info = style.make_part(c, key=key, bars=bars, variation=variation, seed=seed,
+                                  octave=octave, beats_per_bar=4)
+    length = info["bars"] * 4
+    live.send("create_clip", track_index=track_index, clip_index=clip_index, length=length,
+              name=name or f"{c['role'].title()} ({style.project_name(c['project'])})",
+              overwrite=overwrite)
+    live.send("add_notes", track_index=track_index, clip_index=clip_index, notes=notes,
+              replace=True)
+    info.update(track_index=track_index, clip_index=clip_index)
+    return info
 
 
 # ----------------------------------------------------------------------------

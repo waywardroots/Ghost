@@ -35,8 +35,10 @@ ROLE_WORDS = [  # checked in order; the first match wins
     ("arp", ("arp", "seq", "sequence")),
     ("pad", ("pad", "atmos", "string", "choir", "drone", "ambient", "texture")),
     ("chords", ("chord", "stab", "keys", "piano", "rhodes", "organ", "epiano", "e-piano")),
-    ("lead", ("lead", "melod", "hook", "pluck", "vox", "vocal", "bell", "synth")),
+    ("lead", ("lead", "melod", "hook", "pluck", "vox", "vocal", "bell")),
+    ("fx", ("fx", "riser", "sweep", "impact", "noise")),
 ]
+ROLES = ("drums", "bass", "chords", "pad", "lead", "arp", "fx", "other")
 
 
 def _val(el, path):
@@ -104,23 +106,36 @@ def clip_window(clip) -> tuple[float, float]:
     return 0.0, b - a
 
 
-def guess_role(name: str, instrument: str | None, notes: list) -> str:
+def note_role(notes: list, length: float) -> str:
+    """Guess a clip's job from its notes alone (most tracks are just 'MIDI' or '12-Diva')."""
+    if not notes:
+        return "other"
+    starts = Counter(round(n[1], 2) for n in notes)
+    poly = len(notes) / len(starts)
+    mean_pitch = sum(n[0] for n in notes) / len(notes)
+    durs = sorted(n[2] for n in notes)
+    med_dur = durs[len(durs) // 2]
+    density = len(starts) / max(length, 1.0)  # note onsets per beat
+    span = max(n[0] for n in notes) - min(n[0] for n in notes)
+    if span == 0 and med_dur >= 8:
+        return "fx"       # one long held note: a drone, riser or noise sweep
+    if poly >= 1.8:
+        return "pad" if med_dur >= 2 else "chords"
+    if density >= 1.5 and med_dur <= 0.5 and span >= 5:
+        return "arp"
+    if mean_pitch < 56:   # Live's C3 = 60; synth basses are usually written around C1-C2
+        return "bass"
+    return "lead"
+
+
+def guess_role(name: str, instrument: str | None, notes: list, length: float = 4.0) -> str:
     text = f"{name} {instrument or ''}".lower()
     if instrument == "DrumGroupDevice":
         return "drums"
-    for role, words in ROLE_WORDS:
+    for role, words in ROLE_WORDS:  # a name that says what it is wins
         if any(w in text for w in words):
             return role
-    if not notes:
-        return "other"
-    mean_pitch = sum(n[0] for n in notes) / len(notes)
-    starts = Counter(n[1] for n in notes)
-    poly = sum(starts.values()) / len(starts)
-    if mean_pitch < 48:
-        return "bass"
-    if poly >= 2.5:
-        return "chords"
-    return "lead" if mean_pitch >= 60 else "other"
+    return note_role(notes, length)
 
 
 def extract(path: Path) -> list[dict]:
@@ -155,7 +170,7 @@ def extract(path: Path) -> list[dict]:
             if digest in seen:  # the same clip copied around the arrangement
                 continue
             seen.add(digest)
-            role = guess_role(name, inst, notes)
+            role = guess_role(name, inst, notes, length)
             if role != "drums":
                 for p, _, d, _ in notes:
                     hist[p % 12] += d
