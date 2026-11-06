@@ -331,6 +331,14 @@ def main():
         got = r["set"][0] if r["set"] else {}
         check("waking plugin calibrated to target", not r["errors"] and got.get("calibrated")
               and abs(float(got["display"].split()[0]) - 180) <= 10)
+        # long batches stop before the caller's time limit instead of being cut off midway
+        budget, ms.CALIBRATION_BUDGET_S = ms.CALIBRATION_BUDGET_S, -1
+        decay = song.tracks[vox].devices[dv].parameters[1]
+        before = decay.value
+        r = ms.set_device_parameters(vox, dv, [S(parameter="Decay", value="1 s")])
+        ms.CALIBRATION_BUDGET_S = budget
+        check("calibration time budget: reports 'send it again', leaves value alone",
+              r["errors"] and "send it again" in r["errors"][0]["error"] and decay.value == before)
 
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")

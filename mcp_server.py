@@ -512,11 +512,15 @@ class ParamSetting(BaseModel):
                                "'-12 st', 'Saw', 'On'")
 
 
+CALIBRATION_BUDGET_S = float(os.environ.get("GHOST_CALIBRATION_BUDGET", "30"))
+
+
 @tool()
 def set_device_parameters(track_index: int, device_index: int,
                           settings: list[ParamSetting]) -> dict:
     """Shape a sound: set many parameters on one device at once. Settings that fail are listed
     in 'errors' while the rest still apply. Each result shows the new display value."""
+    started = time.monotonic()
     r = live.send("set_device_parameters", track_index=track_index, device_index=device_index,
                   settings=[s.model_dump() for s in settings])
     still = []
@@ -525,6 +529,12 @@ def set_device_parameters(track_index: int, device_index: int,
             still.append(err)
             continue
         want = next(s.value for s in settings if s.parameter == err["parameter"])
+        if time.monotonic() - started > CALIBRATION_BUDGET_S:
+            # Each calibration takes several seconds; stop before the caller's time limit
+            # (about a minute) so nothing is left half-done.
+            still.append({"parameter": err["parameter"], "error": "not set yet: this plugin is "
+                          "set step by step and this call ran out of time; send it again"})
+            continue
         try:
             r["set"].append(_calibrate(track_index, device_index, err["parameter"], want))
         except LiveError as e:
@@ -596,8 +606,11 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
             for i in range(41):
                 v = lo + (hi - lo) * i / 40
                 if norm(show(v)) == norm(text):
-                    return done(v)
-            raise LiveError(f"couldn't find a setting of {p0['name']} that shows '{text}'")
+                    out = done(v)
+                    if norm(out["display"]) == norm(text):  # not a stale reading
+                        return out
+            raise LiveError(f"couldn't find a setting of {p0['name']} that shows '{text}'; "
+                            f"use a raw value between {lo:g} and {hi:g}")
         amount, family = target
         tl, th = show(lo), show(hi)
         if family and (is_raw(tl, lo) or is_raw(th, hi)):
@@ -616,7 +629,7 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
         if amount >= max(a[0], b[0]):
             return done(hi if up else lo)
         l, h = lo, hi
-        for _ in range(16):
+        for _ in range(12):  # 1/4096 of the range: finer than any display shows
             mid = (l + h) / 2
             m = pm.parse_amount(show(mid))
             if m is None:
