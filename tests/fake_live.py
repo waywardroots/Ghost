@@ -427,16 +427,16 @@ class Song:
             assert not self.back_to_arranger, "tracks must follow the Arrangement"
             soloed = [t for t in self.tracks if t.solo]
             src = soloed[0] if soloed else [t for t in self.tracks if t.has_midi_input and t.devices][0]
-            bpb = 4.0 * self.signature_numerator / self.signature_denominator
-            beats = bpb + 64  # plays on until Ghost stops it; record plenty
-            ac = ArrClip("recording", self.current_song_time, beats)
+            beats = 64  # plays on until Ghost stops it; record plenty
+            began = self.current_song_time + 0.4  # record goes on a moment after the jump
+            ac = ArrClip("recording", began, beats)
             ac.file_path = render_track(src, beats * 60.0 / self.tempo)
             if not hasattr(rec, "arrangement_clips"):
                 rec.arrangement_clips = []
             rec.arrangement_clips.append(ac)
-            self.mix_recorded_from = self.current_song_time + bpb  # measured after the run-up
             self.recorded_solo = src.name if soloed else None
-            self._song_time = self.current_song_time + beats  # it has played through
+            self._record_began = began
+            self._song_time = began + beats  # by the time Ghost checks, it has played through
 
     def stop_playing(self):
         self.is_playing = False

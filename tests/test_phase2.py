@@ -211,9 +211,10 @@ def main():
                          notes=[ms.Note(pitch=48, start=0, duration=1)], contains="MIDI track")
             check("failed listen leaves no listen track", all(t.name != "Ghost Listen" for t in song.tracks))
             song.back_to_arranger = True  # an earlier listen took a track off the timeline
+            _bpb0 = 4.0 * song.signature_numerator / song.signature_denominator
             mix = _j.loads(ms.listen_to_mix(bar=5, bars=2)[0])
             check("listen to the whole mix from a bar", "heard" in mix
-                  and getattr(song, "mix_recorded_from", None) == 4.0 * song.signature_numerator * 4.0 / song.signature_denominator)
+                  and 3 * _bpb0 <= getattr(song, "_record_began", -1) < 4 * _bpb0)
             _bpb = 4.0 * song.signature_numerator / song.signature_denominator
             check("run-up bar trimmed off", abs(mix["measurements"]["seconds"]
                                                - 2 * _bpb * 60.0 / song.tempo) < 0.05)

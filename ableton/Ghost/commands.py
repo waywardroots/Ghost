@@ -1039,8 +1039,7 @@ class CommandHandler(object):
         if state["mix"]:
             bpb = self._beats_per_bar()
             out["from_bar"] = round(state["rec_start"] / bpb + 1, 3)  # measured from a bar in
-            out["trim_seconds"] = round(bpb * 60.0 / float(song.tempo), 6)  # the run-up bar
-            out["keep_seconds"] = round(beats * 60.0 / float(song.tempo), 6)
+            out["arrangement"] = True
             seconds = (beats + 2 * bpb) * 60.0 / float(song.tempo)
             out["wait_seconds"] = round(seconds + 0.5, 2)
         return out
@@ -1083,11 +1082,31 @@ class CommandHandler(object):
         play_from = float(song.current_song_time)
         start = play_from + bpb  # one bar of run-up, like pressing Play a bar early
         state["play_from"], state["rec_start"], state["rec_end"] = play_from, start, start + beats
-        # continue_playing plays from the playhead Ghost set (start_playing uses Live's start
-        # marker, which setting the time doesn't move); record goes on once it is rolling, in the
-        # run-up bar, so it can't change where playback starts.
-        song.continue_playing()
+        # Live's Play starts from its start marker, which setting the time while stopped doesn't
+        # move. While playing, setting the time jumps there (like clicking the ruler). So: play,
+        # jump to the run-up bar, and the connector switches record on (arm_audition_record) once
+        # the playhead has landed there.
+        state["phase"] = "jumping"
+        song.start_playing()
+        song.current_song_time = play_from
+
+    def cmd_arm_audition_record(self):
+        """Switch Arrangement record on once the playhead is in the run-up bar."""
+        st = getattr(self, "_audition", None)
+        if not st or not st.get("mix"):
+            raise CommandError("no Arrangement recording is waiting")
+        song = self.song
+        now = float(song.current_song_time)
+        if not song.is_playing:
+            raise CommandError("Live stopped before recording began")
+        if now < st["play_from"] - 0.01:
+            return {"armed": False, "beat": now}  # the jump hasn't landed yet
+        if now > st["rec_start"] - 0.25:
+            raise CommandError("the playhead passed the run-up bar before recording began "
+                               "(beat %.2f)" % now)
         song.record_mode = True
+        st["phase"] = "recording"
+        return {"armed": True, "beat": now}
 
     def _restore_transport(self, st):
         song = self.song
@@ -1127,9 +1146,8 @@ class CommandHandler(object):
         if st.get("mix"):
             song = self.song
             now = float(song.current_song_time)
-            if song.is_playing and now < st["play_from"] - 0.01:
-                raise CommandError("Live started playing at beat %.2f, not at Ghost's run-up "
-                                   "(beat %.2f)" % (now, st["play_from"]))
+            if st.get("phase") != "recording":
+                raise CommandError("recording never began (playhead at beat %.2f)" % now)
             if song.is_playing and now < st["rec_end"] + 0.25:
                 return {"done": False, "beat": now, "until": st["rec_end"]}
             song.stop_playing()
@@ -1141,7 +1159,11 @@ class CommandHandler(object):
             if clip is None:
                 return {"done": True, "file": None,
                         "error": "nothing was recorded (check Live's audio device is running)"}
-            return {"done": True, "file": clip.file_path}
+            spb = 60.0 / float(song.tempo)
+            return {"done": True, "file": clip.file_path,
+                    # where the measured bars begin inside the recording, and how long they are
+                    "trim_seconds": max(0.0, (st["rec_start"] - float(clip.start_time)) * spb),
+                    "keep_seconds": (st["rec_end"] - st["rec_start"]) * spb}
         slot = st["listen_slot"]
         clip = slot.clip if slot.has_clip else None
         if clip is not None and getattr(clip, "is_recording", False) and st.get("auto_stop"):

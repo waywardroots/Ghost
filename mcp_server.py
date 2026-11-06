@@ -864,10 +864,11 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
         try:
             start = live.send("start_audition", track_index=track_index, beats=beats,
                               arrangement=True)
+            _check_start(start, bar)
+            _arm_recording()
         except LiveError:
             live.send("end_audition")
             raise
-        _check_start(start, bar)
         return _finish_listen(start, f"track{track_index}_bar{bar:g}",
                               f"Track {track_index} from bar {bar:g}", compare_to)
     if clip_index is None and not notes:
@@ -889,10 +890,11 @@ def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = Non
     _settle_playhead(bar, bpb)
     try:
         start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+        _check_start(start, bar)
+        _arm_recording()
     except LiveError:
         live.send("end_audition")
         raise
-    _check_start(start, bar)
     return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
                           loudness=True)
 
@@ -929,10 +931,16 @@ def _settle_playhead(bar: float, bpb: float) -> None:
 
 def _check_start(start: dict, bar: float) -> None:
     if abs(float(start.get("from_bar", bar)) - float(bar)) > 1e-3:
-        try:
-            live.send("end_audition")
-        finally:
-            raise LiveError(f"playback started at bar {start.get('from_bar')} instead of {bar:g}")
+        raise LiveError(f"playback started at bar {start.get('from_bar')} instead of {bar:g}")
+
+
+def _arm_recording() -> None:
+    """Live plays, then jumps to the run-up bar; switch record on once it has landed there."""
+    for _ in range(40):
+        if live.send("arm_audition_record").get("armed"):
+            return
+        time.sleep(0.05)
+    raise LiveError("Live's playhead didn't jump to the run-up bar")
 
 
 def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
@@ -961,8 +969,8 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
                 time.sleep(0.5)
         else:
             dest = Path(r["file"])  # analyze it where Live saved it
-        if start.get("trim_seconds"):  # Arrangement recordings start with a bar of run-up
-            dest = _trim_recording(dest, start["trim_seconds"], start.get("keep_seconds"), tag)
+        if r.get("trim_seconds") is not None:  # Arrangement recordings include the run-up
+            dest = _trim_recording(dest, r["trim_seconds"], r.get("keep_seconds"), tag)
     finally:
         try:
             live.send("end_audition")
