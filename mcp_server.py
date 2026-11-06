@@ -871,10 +871,25 @@ def listen_to_mix(bar: float = 1, bars: int = 8, compare_to: Optional[str] = Non
     find_reference_tracks) or 'last'. Stops Live's playback while it records."""
     bars = max(1, min(16, int(bars)))
     info = live.send("get_session_info")
-    bpb = float(str(info.get("time_signature", "4/4")).split("/")[0])
-    live.send("set_song_time", beat=(float(bar) - 1) * bpb)
-    time.sleep(0.4)  # Live moves the playhead on its next update
+    num, den = (float(x) for x in str(info.get("time_signature", "4/4")).split("/"))
+    bpb = num * 4.0 / den  # Live counts quarter-note beats
+    target = (float(bar) - 1) * bpb
+    settled = 0
+    for _ in range(40):  # Live moves the playhead on a later update; make sure it stays there
+        live.send("set_song_time", beat=target) if settled == 0 else None
+        time.sleep(0.12)
+        now = live.send("get_song_time")["beat"]
+        settled = settled + 1 if abs(now - target) < 1e-3 else 0
+        if settled >= 3:
+            break
+    else:
+        raise LiveError(f"Live's playhead didn't stay at bar {bar:g}; is a dialog open in Live?")
     start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+    if abs(float(start.get("from_bar", bar)) - float(bar)) > 1e-3:
+        try:
+            live.send("end_audition")
+        finally:
+            raise LiveError(f"playback started at bar {start.get('from_bar')} instead of {bar:g}")
     return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
                           loudness=True)
 

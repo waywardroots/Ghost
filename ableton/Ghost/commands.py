@@ -60,6 +60,15 @@ def _match_score(name, query):
     return 0
 
 
+
+def _safe(obj, attr, default=None):
+    """getattr that also survives Live's RuntimeErrors (group, return and master tracks raise
+    instead of returning nothing for things like arrangement_clips, clip_slots or mute)."""
+    try:
+        return getattr(obj, attr, default)
+    except Exception:
+        return default
+
 class CommandHandler(object):
     def __init__(self, song, application, log=None):
         self.song = song
@@ -130,11 +139,11 @@ class CommandHandler(object):
             "index": index,
             "name": track.name,
             "type": "master" if is_master else self._track_type(track),
-            "mute": bool(getattr(track, "mute", False)),
-            "solo": bool(getattr(track, "solo", False)),
-            "arm": bool(track.arm) if getattr(track, "can_be_armed", False) else None,
+            "mute": bool(_safe(track, "mute", False)),
+            "solo": bool(_safe(track, "solo", False)),
+            "arm": bool(_safe(track, "arm", False)) if _safe(track, "can_be_armed", False) else None,
             "devices": [d.name for d in track.devices],
-            "clips": [i for i, s in enumerate(getattr(track, "clip_slots", []) or [])
+            "clips": [i for i, s in enumerate(_safe(track, "clip_slots", []) or [])
                       if s.has_clip],
         }
 
@@ -164,7 +173,7 @@ class CommandHandler(object):
                             "parameter_count": len(list(d.parameters))}
                            for i, d in enumerate(t.devices)]
         clips = []
-        for i, slot in enumerate(getattr(t, "clip_slots", []) or []):
+        for i, slot in enumerate(_safe(t, "clip_slots", []) or []):
             if slot.has_clip:
                 c = slot.clip
                 clips.append({"clip_index": i, "name": c.name, "length_beats": float(c.length),
@@ -487,7 +496,7 @@ class CommandHandler(object):
     def _arrangement_end(self):
         end = 0.0
         for t in self._tracks():
-            for c in getattr(t, "arrangement_clips", []) or []:
+            for c in _safe(t, "arrangement_clips", []) or []:
                 end = max(end, float(c.end_time))
         return end
 
@@ -497,7 +506,7 @@ class CommandHandler(object):
         for i, t in enumerate(self._tracks()):
             clips = [{"name": c.name, "start_bar": round(float(c.start_time) / bpb + 1, 2),
                       "end_bar": round(float(c.end_time) / bpb + 1, 2)}
-                     for c in (getattr(t, "arrangement_clips", []) or [])]
+                     for c in (_safe(t, "arrangement_clips", []) or [])]
             if clips:
                 tracks.append({"index": i, "name": t.name, "clips": clips})
         cues = [{"name": c.name, "bar": round(float(c.time) / bpb + 1, 2)}
@@ -581,7 +590,7 @@ class CommandHandler(object):
             if not hasattr(track, "delete_clip"):
                 raise CommandError("this version of Live can't delete Arrangement clips from a "
                                    "script (needs Live 12)")
-            for c in list(getattr(track, "arrangement_clips", []) or []):
+            for c in list(_safe(track, "arrangement_clips", []) or []):
                 s, e = float(c.start_time), float(c.end_time)
                 if e > t0 + 1e-9 and (t1 is None or s < t1 - 1e-9):
                     track.delete_clip(c)
@@ -614,13 +623,13 @@ class CommandHandler(object):
                                    "script (needs Live 12)")
         song_end = 0.0
         for tr in tracks:
-            for c in list(getattr(tr, "arrangement_clips", []) or []):
+            for c in list(_safe(tr, "arrangement_clips", []) or []):
                 song_end = max(song_end, float(c.end_time))
         stage = (int(song_end / bpb) + 64) * bpb  # spare area well past the last clip
         staged, originals = [], []
         try:
             for tr in tracks:
-                clips = list(getattr(tr, "arrangement_clips", []) or [])
+                clips = list(_safe(tr, "arrangement_clips", []) or [])
                 originals.append((tr, clips))
                 for a, b, n in moves:
                     t0, t1 = (a - 1) * bpb, (b - 1) * bpb
@@ -681,7 +690,7 @@ class CommandHandler(object):
                 "end_bar": round((t + int(repeats) * length) / bpb + 1, 3)}
 
     def _arrangement_clip_at(self, track, t):
-        for c in list(getattr(track, "arrangement_clips", []) or []):
+        for c in list(_safe(track, "arrangement_clips", []) or []):
             if abs(float(c.start_time) - t) < 1e-3:
                 return c
         return None
@@ -882,6 +891,10 @@ class CommandHandler(object):
 
     # Locators: Live moves the playhead a moment after it's set, so placing a locator takes
     # two steps (set_song_time, then cue_at_playhead once the playhead has arrived).
+    def cmd_get_song_time(self):
+        return {"beat": float(self.song.current_song_time),
+                "is_playing": bool(self.song.is_playing)}
+
     def cmd_set_song_time(self, beat):
         self.song.current_song_time = max(0.0, float(beat))
         return {"requested_beat": float(beat)}
@@ -977,7 +990,7 @@ class CommandHandler(object):
             listen.current_monitoring_state = 2  # Off, so it doesn't feed back
             listen.arm = True
             for t in self._tracks():  # hear only the source; solos are restored afterwards
-                if t is not src and getattr(t, "solo", False):
+                if t is not src and _safe(t, "solo", False):
                     t.solo = False
             if src is not None:
                 src.solo = True

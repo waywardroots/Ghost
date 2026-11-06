@@ -110,7 +110,7 @@ python tests/test_style.py
 python tests/test_reference_scan.py
 ```
 Runs the full chain against a simulated Live, plus preset-file, dataset, pattern and
-reference tests (194 checks).
+reference tests (195 checks).
 
 ---
 

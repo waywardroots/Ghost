@@ -210,11 +210,28 @@ def main():
             song.back_to_arranger = True  # an earlier listen took a track off the timeline
             mix = _j.loads(ms.listen_to_mix(bar=5, bars=2)[0])
             check("listen to the whole mix from a bar", "heard" in mix
-                  and getattr(song, "mix_recorded_from", None) == 4.0 * song.signature_numerator)
+                  and getattr(song, "mix_recorded_from", None) == 4.0 * song.signature_numerator * 4.0 / song.signature_denominator)
             check("mix listen measures loudness", isinstance(mix["measurements"].get("lufs_integrated"), float)
                   and any("LUFS" in h for h in mix["heard"]))
             check("tracks follow the Arrangement again", song.back_to_arranger is False
                   and all(t.name != "Ghost Listen" for t in song.tracks))
+            class _Group:  # like Live: group tracks raise instead of having clips
+                name, is_foldable, devices, can_be_armed = "grp", True, [], False
+                mixer_device = song.tracks[0].mixer_device
+                @property
+                def arrangement_clips(self):
+                    raise RuntimeError("Main, Group and Return Tracks have no arrangement clips")
+                @property
+                def mute(self):
+                    raise RuntimeError("no mute")
+                clip_slots = []
+            song.tracks.insert(0, _Group())
+            try:
+                ok = "tracks" in ms.get_arrangement_info() and \
+                     ms.get_session_info()["tracks"][0]["type"] == "group"
+            finally:
+                song.tracks.pop(0)
+            check("group tracks don't break arrangement/session info", ok)
             m = ms.get_track_info(-1)
             check("master track addressed as -1", m["type"] == "master" and m["clips"] == [])
             check("master volume", abs(ms.set_track_volume(-1, 0.8)["volume"] - 0.8) < 1e-6)
