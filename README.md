@@ -105,8 +105,10 @@ python tests/test_phase2.py
 python tests/test_presets.py
 python tests/test_midi_dataset.py
 python tests/test_style.py
+python tests/test_reference_scan.py
 ```
-Runs the full chain against a simulated Live, plus preset-file, dataset and pattern tests (170 checks).
+Runs the full chain against a simulated Live, plus preset-file, dataset, pattern and
+reference tests (183 checks).
 
 ---
 
@@ -136,3 +138,26 @@ this track"*, *"find my Diva arps around 125"*, *"use my drum groove from Night 
   are), fitted to the length, and varied a little so it's a new take in your style rather
   than a copy. `variation` 0 = exact, 0.3 = fresh take, 1 = loose; a different `seed`
   gives a different take.
+
+---
+
+## Learning from the music you own
+```
+py -3.13 -m pip install mutagen
+py -3.13 reference_scan.py
+```
+Studies every track in `F:\Music` (pass `--music "D:\Other Folder"` for others): tempo and key
+(from the tags your DJ software wrote, or measured), the arrangement (loudness per bar, intro
+length, breakdowns and drops by bar) and the mix of the loudest 32 bars (band balance,
+brightness, loudness, stereo width). Tracks by James and the Cat and the "My Tracks To Play"
+folder are marked as yours. DJ software folders (Serato, Engine, rekordbox) are skipped. The
+first scan takes a while; later scans only touch new tracks. `--profile` prints the summary.
+
+Ghost then has two more tools:
+- `get_reference_profile` - what your references have in common, overall, per genre folder
+  or for your own releases: arrangement and mix targets for a new track.
+- `find_reference_tracks` - tracks to compare against, by artist, title, genre, key or tempo,
+  with their arrangement by bar; hand one to `listen_to_track` as `compare_to`.
+
+Ghost learns arrangement and mix from these tracks; melodies and basslines come from your own
+projects (Phase 3), so what it writes stays yours.

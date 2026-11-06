@@ -4,3 +4,4 @@ soundfile
 mcp>=1.2
 zstandard
 matplotlib
+mutagen

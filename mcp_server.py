@@ -932,6 +932,70 @@ def get_style_profile() -> dict:
     return build_profile(_db())
 
 
+# ---- the music the user owns (reference_scan.py) ----------------------------
+def _ref_db():
+    import reference_scan
+    if not DB_PATH.exists():
+        raise LiveError("no library database yet: run 'py -3.13 reference_scan.py' in the Ghost folder")
+    return reference_scan.open_db(str(DB_PATH)), reference_scan
+
+
+@tool()
+def find_reference_tracks(query: Optional[str] = None, genre: Optional[str] = None,
+                          key: Optional[str] = None, tempo: Optional[float] = None,
+                          yours: Optional[bool] = None, limit: int = 15) -> list[dict]:
+    """Search the finished tracks the user owns (their DJ library and their own releases) to
+    use as references: query matches artist/title, genre matches the folder (e.g. 'melodic
+    techno'), key/tempo rank the closest first, yours=true for their own released tracks.
+    Each result has the arrangement (intro, sections by bar) and mix numbers; pass its path
+    to analyze_audio_file or as compare_to in listen_to_track to match a sound or mix."""
+    con, rs = _ref_db()
+    q = "SELECT * FROM reference_tracks WHERE error IS NULL"
+    args = []
+    if query:
+        q += " AND (lower(artist) LIKE ? OR lower(title) LIKE ? OR lower(path) LIKE ?)"
+        args += [f"%{query.lower()}%"] * 3
+    if genre:
+        q += " AND lower(genre) LIKE ?"
+        args.append(f"%{genre.lower()}%")
+    if yours is not None:
+        q += " AND yours=?"
+        args.append(int(yours))
+    rows = con.execute(q, args).fetchall()
+    want = rs.normalize_key(key) if key else None
+
+    def score(r):
+        s = 0.0
+        if want and r["musical_key"]:
+            s += 2 if r["musical_key"] == want else (0.5 if r["musical_key"].split()[1] == want.split()[1] else 0)
+        if tempo and r["bpm"]:
+            s -= abs(r["bpm"] - tempo) / 4
+        return s
+    rows = sorted(rows, key=score, reverse=True)[: max(1, min(int(limit), 100))]
+    out = []
+    for r in rows:
+        out.append({"path": r["path"], "artist": r["artist"], "title": r["title"],
+                    "genre": r["genre"], "yours": bool(r["yours"]), "bpm": r["bpm"],
+                    "key": r["musical_key"], "minutes": round((r["seconds"] or 0) / 60, 1),
+                    "bars": r["bars"], "intro_bars": r["intro_bars"],
+                    "sections": json.loads(r["sections"] or "[]"),
+                    "mix": {"loudness_db": r["loudness_db"], "crest_db": r["crest_db"],
+                            "bands_percent": json.loads(r["bands"] or "{}"),
+                            "brightness_hz": r["brightness_hz"],
+                            "stereo_width": r["stereo_width"], "low_end_width": r["low_end_width"]}})
+    return out
+
+
+@tool()
+def get_reference_profile(genre: Optional[str] = None, yours: Optional[bool] = None) -> dict:
+    """What the user's reference music has in common (medians): tempo, length, keys, how long
+    intros run, how many breakdowns and where the first one lands, and the mix (loudness, band
+    balance, width). Narrow to a genre folder, or yours=true for their own releases. Use it to
+    set arrangement and mix targets for a new track."""
+    con, rs = _ref_db()
+    return rs.profile(con, genre=genre, yours=yours)
+
+
 # ---- your-style patterns (Phase 3) ------------------------------------------
 STYLE_LIB = style.Library(Path(os.environ.get("GHOST_MIDI_DATASET",
                                               str(app_dir() / "midi_dataset.jsonl"))))
