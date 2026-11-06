@@ -965,15 +965,16 @@ class CommandHandler(object):
         song = self.song
         mix = track_index == self.MASTER
         src = None if mix else self._track(track_index)
-        state = {"src": src, "solos": [(t, bool(t.solo)) for t in self._tracks()],
-                 "created_scene": None, "src_slot": None, "temp_clip": False, "mix": mix}
+        state = {"src": src, "solos": [(t, bool(_safe(t, "solo", False))) for t in self._tracks()],
+                 "created_scene": None, "src_slot": None, "temp_clip": False, "mix": mix,
+                 # armed tracks, noted before Ghost arms its own (Exclusive Arm may disarm them)
+                 "arms": [t for t in self._tracks()
+                          if _safe(t, "can_be_armed", False) and _safe(t, "arm", False)]}
 
         # what to play
         if mix or arrangement:  # the Arrangement from the playhead (set it with set_song_time)
             state["mix"] = True
             self._back_to_arrangement()
-            song.create_scene(-1)
-            state["created_scene"] = len(list(song.scenes)) - 1
             slot = None
         elif clip_index is None:
             if not notes:
@@ -1016,26 +1017,18 @@ class CommandHandler(object):
                     t.solo = False
             if src is not None:
                 src.solo = True
-            listen_slot = list(listen.clip_slots)[state["created_scene"]]
-            state["listen_slot"] = listen_slot
-            if slot is not None:
-                slot.fire()
             if state["mix"]:
-                # Start like the Play button (the Arrangement plays as it does for the user),
-                # then record from the next downbeat: set the playhead one bar early.
+                self._start_arrangement_recording(state, listen, beats)
+            else:
+                listen_slot = list(listen.clip_slots)[state["created_scene"]]
+                state["listen_slot"] = listen_slot
+                slot.fire()
                 try:
-                    state["quant"] = song.clip_trigger_quantization
-                    song.clip_trigger_quantization = 4  # 1 bar
-                except Exception:
-                    state["quant"] = None
-                state["play_from"] = float(song.current_song_time)
-                song.start_playing()
-            try:
-                listen_slot.fire(record_length=beats)
-                state["auto_stop"] = True
-            except TypeError:  # older Live: stop it ourselves
-                listen_slot.fire()
-                state["auto_stop"] = False
+                    listen_slot.fire(record_length=beats)
+                    state["auto_stop"] = True
+                except TypeError:  # older Live: stop it ourselves
+                    listen_slot.fire()
+                    state["auto_stop"] = False
         except Exception:
             self._audition = state
             self._cleanup_audition()
@@ -1045,10 +1038,64 @@ class CommandHandler(object):
         out = {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
         if state["mix"]:
             bpb = self._beats_per_bar()
-            out["from_bar"] = round(state["play_from"] / bpb + 2, 3)  # recording starts a bar in
+            out["from_bar"] = round(state["rec_start"] / bpb + 1, 3)  # recording starts a bar in
             seconds = (beats + 2 * bpb) * 60.0 / float(song.tempo)
             out["wait_seconds"] = round(seconds + 0.5, 2)
         return out
+
+    # Recording the Arrangement: Live's own Arrangement recording on the temporary track,
+    # punched in/out to exactly the bars being measured. (Launching a Session record slot while
+    # the Arrangement plays left plugin synths silent in the recording on some setups.)
+    _TRANSPORT = ("loop", "loop_start", "loop_length", "punch_in", "punch_out", "record_mode")
+
+    def _start_arrangement_recording(self, state, listen, beats):
+        song, bpb = self.song, self._beats_per_bar()
+        state["transport"] = dict((k, getattr(song, k)) for k in self._TRANSPORT
+                                  if hasattr(song, k))
+        # nothing of the user's may record: disarm every other track (restored afterwards)
+        for t in self._tracks():
+            if t is not listen and _safe(t, "can_be_armed", False) and _safe(t, "arm", False):
+                if t not in state["arms"]:
+                    state["arms"].append(t)
+                t.arm = False
+        play_from = float(song.current_song_time)
+        start = play_from + bpb  # one bar of run-up, like pressing Play a bar early
+        state["play_from"], state["rec_start"], state["rec_end"] = play_from, start, start + beats
+        song.loop = False
+        song.loop_start = start
+        song.loop_length = beats
+        song.punch_in = True
+        song.punch_out = True
+        song.record_mode = True
+        song.start_playing()
+
+    def _restore_transport(self, st):
+        song = self.song
+        for k in ("record_mode", "punch_in", "punch_out", "loop_start", "loop_length", "loop"):
+            if k in st.get("transport", {}):
+                try:
+                    setattr(song, k, st["transport"][k])
+                except Exception:
+                    pass
+        st["transport"] = {}
+
+    def _restore_arms(self, st):
+        listen = st.get("listen")
+        for t in st.get("arms", []):
+            if t is listen or t not in self._tracks():
+                continue
+            try:
+                t.arm = True
+            except Exception:
+                pass
+        st["arms"] = []
+
+    def _arrangement_recording(self, st):
+        listen = st.get("listen")
+        for c in list(_safe(listen, "arrangement_clips", []) or []):
+            if getattr(c, "file_path", None):
+                return c
+        return None
 
     def cmd_finish_audition(self):
         """Stop the recording (if it's done) and return the recorded file. Cleanup is separate
@@ -1056,6 +1103,20 @@ class CommandHandler(object):
         st = getattr(self, "_audition", None)
         if not st:
             raise CommandError("no recording is running")
+        if st.get("mix"):
+            song = self.song
+            if song.is_playing and float(song.current_song_time) < st["rec_end"] + 0.25:
+                return {"done": False, "beat": float(song.current_song_time)}
+            song.stop_playing()
+            try:
+                song.record_mode = False
+            except Exception:
+                pass
+            clip = self._arrangement_recording(st)
+            if clip is None:
+                return {"done": True, "file": None,
+                        "error": "nothing was recorded (check Live's audio device is running)"}
+            return {"done": True, "file": clip.file_path}
         slot = st["listen_slot"]
         clip = slot.clip if slot.has_clip else None
         if clip is not None and getattr(clip, "is_recording", False) and st.get("auto_stop"):
@@ -1084,17 +1145,14 @@ class CommandHandler(object):
                 t.solo = was
             except Exception:
                 pass
+        self._restore_transport(st)
         listen = st.get("listen")
         if listen is not None:
             tracks = self._tracks()
             if listen in tracks:
                 song.delete_track(tracks.index(listen))
+        self._restore_arms(st)
         self._back_to_arrangement()
-        if st.get("quant") is not None:
-            try:
-                song.clip_trigger_quantization = st["quant"]
-            except Exception:
-                pass
         if st.get("temp_clip") and st.get("src_slot") is not None and st["src_slot"].has_clip:
             st["src_slot"].delete_clip()
         row = st.get("created_scene")

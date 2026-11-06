@@ -182,6 +182,7 @@ def main():
         # ---- listening: record the synth, change it, hear the difference ----
         ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="300 Hz")])
         song.tracks[vox].solo = True  # user had something soloed; must be restored
+        song.tracks[vox].arm = True   # ...and something armed (Ghost's arming may clear it)
         tracks_before, scenes_before = len(song.tracks), len(song.scenes)
         ms.live.timeout = 25
         orig_wait = ms.time.sleep
@@ -197,6 +198,8 @@ def main():
                   and len(song.scenes) == scenes_before
                   and all(t.name != "Ghost Listen" for t in song.tracks))
             check("solo states restored", song.tracks[vox].solo and not song.tracks[bass].solo)
+            check("armed tracks restored", song.tracks[vox].arm is True)
+            song.tracks[vox].arm = False
             ms.set_device_parameters(bass, 0, [S(parameter="Filter Cutoff", value="3 kHz")])
             bright = _j.loads(ms.listen_to_track(bass, beats=8, compare_to="last")[0])
             check("hears that it got brighter", any("brighter" in d for d in bright["differences"]))
@@ -240,9 +243,17 @@ def main():
             finally:
                 song.tracks.pop(0); member.is_grouped = False; member.group_track = None
             check("groups list their member tracks", ok)
+            song.tracks[vox].arm = True  # the user has a track armed
             out = ms.listen_to_track(bass, bar=3, beats=4)
             check("listen to a track from the Arrangement", "heard" in _j.loads(out[0])
+                  and song.recorded_solo == song.tracks[bass].name
                   and song.tracks[bass].solo is False and song.back_to_arranger is False)
+            check("arrangement recording restores transport and arms",
+                  song.loop is True and song.loop_start == 0.0 and song.loop_length == 720.0
+                  and not song.punch_in and not song.punch_out and not song.record_mode
+                  and song.tracks[vox].arm is True
+                  and all(t.name != "Ghost Listen" for t in song.tracks))
+            song.tracks[vox].arm = False
             m = ms.get_track_info(-1)
             check("master track addressed as -1", m["type"] == "master" and m["clips"] == [])
             check("master volume", abs(ms.set_track_volume(-1, 0.8)["volume"] - 0.8) < 1e-6)

@@ -210,16 +210,8 @@ class ClipSlot:
             soloed = [t for t in SONG.tracks if t.solo]
             beats = record_length or 8.0
             c = Clip(beats, is_midi=False, name="recording")
-            if soloed:
-                assert len(soloed) == 1, "exactly the source track should be soloed"
-                c.file_path = render_track(soloed[0], beats * 60.0 / SONG.tempo)
-            else:  # the whole mix: the arrangement plays from the playhead
-                assert not SONG.back_to_arranger, "tracks must follow the Arrangement"
-                synths = [t for t in SONG.tracks if t.has_midi_input and t.devices]
-                c.file_path = render_track(synths[0], beats * 60.0 / SONG.tempo)
-                assert SONG.is_playing, "the transport should already be playing (like Play)"
-                bpb = 4.0 * SONG.signature_numerator / SONG.signature_denominator
-                SONG.mix_recorded_from = SONG.current_song_time + bpb  # next downbeat
+            assert len(soloed) == 1, "exactly the source track should be soloed"
+            c.file_path = render_track(soloed[0], beats * 60.0 / SONG.tempo)
             c.is_recording = False
             self.clip = c
 
@@ -349,6 +341,8 @@ class Song:
         self._pending_time = None
         self.back_to_arranger = False
         self.clip_trigger_quantization = 4
+        self.loop, self.loop_start, self.loop_length = True, 0.0, 720.0
+        self.punch_in = self.punch_out = self.record_mode = False
         self.master_track = Track("other", "Master", 0)
         self.master_track.has_audio_input = False
         self.master_track.can_be_armed = False
@@ -407,6 +401,24 @@ class Song:
 
     def start_playing(self):
         self.is_playing = True
+        if self.record_mode and self.punch_in:  # Arrangement recording, punched in/out
+            armed = [t for t in self.tracks if getattr(t, "arm", False)]
+            assert len(armed) == 1, "only Ghost's own track may be armed while recording"
+            rec = armed[0]
+            assert rec.input_routing_type.display_name == "Resampling"
+            assert not self.loop, "loop should be off while recording"
+            assert not self.back_to_arranger, "tracks must follow the Arrangement"
+            soloed = [t for t in self.tracks if t.solo]
+            src = soloed[0] if soloed else [t for t in self.tracks if t.has_midi_input and t.devices][0]
+            secs = self.loop_length * 60.0 / self.tempo
+            ac = ArrClip("recording", self.loop_start, self.loop_length)
+            ac.file_path = render_track(src, secs)
+            if not hasattr(rec, "arrangement_clips"):
+                rec.arrangement_clips = []
+            rec.arrangement_clips.append(ac)
+            self.mix_recorded_from = self.loop_start
+            self.recorded_solo = src.name if soloed else None
+            self._song_time = self.loop_start + self.loop_length + 0.5  # it has played through
 
     def stop_playing(self):
         self.is_playing = False
