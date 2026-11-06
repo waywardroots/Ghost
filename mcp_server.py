@@ -608,7 +608,7 @@ def _calibrate(track_index: int, device_index: int, parameter: str, want, settle
         if a is None or b is None or a[0] == b[0]:
             raise LiveError(f"{p0['name']} doesn't show numbers I can steer by; use a raw value")
         shown = a[1] or b[1]
-        if family and family != shown:
+        if family and family != shown and not (family == "%" and shown is None):
             raise LiveError(f"{p0['name']} is shown in {shown or 'plain numbers'}, not {family}")
         up = b[0] > a[0]
         if amount <= min(a[0], b[0]):

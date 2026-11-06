@@ -82,6 +82,10 @@ class RawParam(LaggyParam):
         self._waking, self._start, self._awake = waking, value, False
         self._shown = "%.2f" % value
 
+    def str_for_value(self, v):
+        # like SubBoomBass2 after a reload: the preview echoes the raw number
+        return "%.2f" % v if not self._awake else self._shown
+
     def refresh(self):
         if self._waking and self.value != self._start:
             self._awake = True

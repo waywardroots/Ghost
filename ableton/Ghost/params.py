@@ -62,6 +62,14 @@ def choices(param):
         return []
 
 
+def _is_raw(text, v):
+    """True when a display is just the bare raw value (no units), e.g. '0.25' for 0.25."""
+    try:
+        return abs(float(("%s" % (text,)).strip()) - float(v)) < 0.006
+    except (TypeError, ValueError):
+        return False
+
+
 class _Reader(object):
     """Reads the text a parameter would show for a raw value."""
 
@@ -69,9 +77,12 @@ class _Reader(object):
         self.p = param
         self.use_str_for_value = False
         try:
-            a = param.str_for_value(param.min)
-            b = param.str_for_value(param.max)
-            self.use_str_for_value = a != b
+            lo, hi = float(param.min), float(param.max)
+            probes = [(v, param.str_for_value(v)) for v in (lo, (lo + hi) / 2.0, hi)]
+            # Some plugins (often right after a set loads) only echo the raw number back
+            # ("0.25"); steering by that would treat 0..1 as the real range.
+            echoes = all(_is_raw(t, v) for v, t in probes)
+            self.use_str_for_value = probes[0][1] != probes[-1][1] and not echoes
         except Exception:
             pass
 
@@ -140,8 +151,8 @@ def _solve(p, target, family):
                          "set it with a raw value between %g and %g instead"
                          % (p.name, reader.text(lo), lo, hi))
     shown = a[1] or b[1]
-    if family and shown and family != shown:
-        raise ParamError("%s is shown in %s, not %s" % (p.name, shown, family))
+    if family and family != shown and not (family == "%" and shown is None):
+        raise ParamError("%s is shown in %s, not %s" % (p.name, shown or "plain numbers", family))
     if a[0] == b[0]:
         raise ParamError("%s shows the same value across its range" % p.name)
     increasing = b[0] > a[0]
