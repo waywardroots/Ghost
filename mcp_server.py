@@ -874,7 +874,7 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
 
 
 @tool()
-def listen_to_mix(bar: float = 1, bars: int = 8, compare_to: Optional[str] = None):
+def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = None):
     """Hear the whole song: Ghost plays the Arrangement from a bar (nothing soloed), records the
     master output through Resampling and measures it like listen_to_track, plus loudness
     (LUFS) and peak. Use it to mix and master: check a drop, a breakdown, the low end of the
@@ -896,8 +896,12 @@ def _beats_per_bar() -> float:
 
 
 def _settle_playhead(bar: float, bpb: float) -> None:
-    """Move the playhead to a bar and wait until Live has really put it there."""
-    target = (float(bar) - 1) * bpb
+    """Put the playhead one bar before `bar` (Ghost presses Play there and records from the
+    next downbeat) and wait until Live has really put it there."""
+    if float(bar) < 2:
+        raise LiveError("start from bar 2 or later (Ghost needs one bar of run-up)")
+    live.send("stop_playback")
+    target = (float(bar) - 2) * bpb
     settled = 0
     for _ in range(40):  # Live moves the playhead on a later update; make sure it stays there
         if settled == 0:

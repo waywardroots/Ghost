@@ -1020,6 +1020,16 @@ class CommandHandler(object):
             state["listen_slot"] = listen_slot
             if slot is not None:
                 slot.fire()
+            if state["mix"]:
+                # Start like the Play button (the Arrangement plays as it does for the user),
+                # then record from the next downbeat: set the playhead one bar early.
+                try:
+                    state["quant"] = song.clip_trigger_quantization
+                    song.clip_trigger_quantization = 4  # 1 bar
+                except Exception:
+                    state["quant"] = None
+                state["play_from"] = float(song.current_song_time)
+                song.start_playing()
             try:
                 listen_slot.fire(record_length=beats)
                 state["auto_stop"] = True
@@ -1034,7 +1044,10 @@ class CommandHandler(object):
         seconds = (beats + 4.0) * 60.0 / float(song.tempo)  # + up to one bar of launch delay
         out = {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
         if state["mix"]:
-            out["from_bar"] = round(float(song.current_song_time) / self._beats_per_bar() + 1, 3)
+            bpb = self._beats_per_bar()
+            out["from_bar"] = round(state["play_from"] / bpb + 2, 3)  # recording starts a bar in
+            seconds = (beats + 2 * bpb) * 60.0 / float(song.tempo)
+            out["wait_seconds"] = round(seconds + 0.5, 2)
         return out
 
     def cmd_finish_audition(self):
@@ -1077,6 +1090,11 @@ class CommandHandler(object):
             if listen in tracks:
                 song.delete_track(tracks.index(listen))
         self._back_to_arrangement()
+        if st.get("quant") is not None:
+            try:
+                song.clip_trigger_quantization = st["quant"]
+            except Exception:
+                pass
         if st.get("temp_clip") and st.get("src_slot") is not None and st["src_slot"].has_clip:
             st["src_slot"].delete_clip()
         row = st.get("created_scene")
