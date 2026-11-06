@@ -521,11 +521,13 @@ def load_device(track_index: int, name: str, kind: str = "any") -> dict:
 
 @tool()
 def load_sample(track_index: int, path: str, clip_index: Optional[int] = None,
-                overwrite: bool = False) -> dict:
+                overwrite: bool = False, transpose: int = 0) -> dict:
     """Load one of the user's samples (full path from search_samples). On an audio track with
-    clip_index it becomes an audio clip; on a MIDI track it loads into a Simpler."""
+    clip_index it becomes an audio clip; on a MIDI track it loads into a Simpler.
+    transpose: semitones for that audio clip, e.g. to match a transposed loop on the timeline
+    (a Session copy of an Arrangement loop lets automate draw fades and sweeps over it)."""
     return live.send("load_sample", track_index=track_index, path=path,
-                     clip_index=clip_index, overwrite=overwrite)
+                     clip_index=clip_index, overwrite=overwrite, transpose=transpose)
 
 
 @tool()

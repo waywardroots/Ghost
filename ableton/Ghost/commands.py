@@ -399,8 +399,9 @@ class CommandHandler(object):
         return {"loaded": item.name, "from": path, "category": cat,
                 "track_devices": [d.name for d in track.devices]}
 
-    def cmd_load_sample(self, track_index, path, clip_index=None, overwrite=False):
-        """Put an audio file into a clip slot (audio track) or a Simpler (MIDI track)."""
+    def cmd_load_sample(self, track_index, path, clip_index=None, overwrite=False, transpose=0):
+        """Put an audio file into a clip slot (audio track) or a Simpler (MIDI track).
+        transpose: semitones for an audio clip (e.g. to match a transposed copy on the timeline)."""
         track = self._track(track_index)
         ttype = self._track_type(track)
         slot = None
@@ -415,9 +416,16 @@ class CommandHandler(object):
         if ttype == "audio" and slot is not None and hasattr(slot, "create_audio_clip"):
             if not os.path.isfile(path):
                 raise CommandError("file not found: %s" % path)
-            slot.create_audio_clip(path)
-            return {"loaded": os.path.basename(path), "method": "audio clip",
-                    "track_index": track_index, "clip_index": clip_index}
+            transpose = int(transpose or 0)
+            if not -48 <= transpose <= 48:
+                raise CommandError("transpose must be between -48 and 48 semitones")
+            clip = slot.create_audio_clip(path) or slot.clip
+            out = {"loaded": os.path.basename(path), "method": "audio clip",
+                   "track_index": track_index, "clip_index": clip_index}
+            if transpose and clip is not None:
+                clip.pitch_coarse = transpose
+                out["transpose"] = transpose
+            return out
 
         # Otherwise go through Live's browser (folder must be in Places / User Library)
         file_name = os.path.basename(path.replace("\\", "/"))

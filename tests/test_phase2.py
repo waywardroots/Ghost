@@ -415,6 +415,10 @@ def main():
         r = ms.load_sample(vox, str(sample_file), clip_index=1)
         check("sample into audio clip (Live 12.0.5+ path)", r["method"] == "audio clip"
               and song.tracks[vox].clip_slots[1].clip.name == "_tmp_vox.wav")
+        r = ms.load_sample(vox, str(sample_file), clip_index=2, transpose=2)
+        check("session audio clip transposed", r.get("transpose") == 2
+              and song.tracks[vox].clip_slots[2].clip.pitch_coarse == 2)
+        song.tracks[vox].clip_slots[2].delete_clip()
         sample_file.unlink()
         r = ms.load_sample(drums, r"D:\Samples\Drums\Kick_Hard_01.wav")
         check("sample into Simpler via browser", r["method"] == "browser" and "Simpler" in r["track_devices"])
