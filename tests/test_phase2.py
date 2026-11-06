@@ -207,6 +207,18 @@ def main():
             expect_error("listening to an audio track needs a clip", ms.listen_to_track, vox,
                          notes=[ms.Note(pitch=48, start=0, duration=1)], contains="MIDI track")
             check("failed listen leaves no listen track", all(t.name != "Ghost Listen" for t in song.tracks))
+            song.back_to_arranger = True  # an earlier listen took a track off the timeline
+            mix = _j.loads(ms.listen_to_mix(bar=5, bars=2)[0])
+            check("listen to the whole mix from a bar", "heard" in mix
+                  and getattr(song, "mix_recorded_from", None) == 4.0 * song.signature_numerator)
+            check("mix listen measures loudness", isinstance(mix["measurements"].get("lufs_integrated"), float)
+                  and any("LUFS" in h for h in mix["heard"]))
+            check("tracks follow the Arrangement again", song.back_to_arranger is False
+                  and all(t.name != "Ghost Listen" for t in song.tracks))
+            m = ms.get_track_info(-1)
+            check("master track addressed as -1", m["type"] == "master" and m["clips"] == [])
+            check("master volume", abs(ms.set_track_volume(-1, 0.8)["volume"] - 0.8) < 1e-6)
+            expect_error("master can't be deleted", ms.delete_track, -1, contains="Master")
         finally:
             ms.time.sleep = orig_wait
             song.tracks[vox].solo = False

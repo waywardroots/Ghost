@@ -515,7 +515,8 @@ def search_live_browser(query: str, category: str = "all", limit: int = 25) -> l
 @tool()
 def load_device(track_index: int, name: str, kind: str = "any") -> dict:
     """Load an instrument, effect, VST/AU plugin, preset or drum kit onto a track by name.
-    kind: any, plugin, instrument, audio_effect, midi_effect, drum_kit, preset."""
+    kind: any, plugin, instrument, audio_effect, midi_effect, drum_kit, preset.
+    track_index -1 = the Master track (mastering chain)."""
     return live.send("load_device", track_index=track_index, name=name, kind=kind)
 
 
@@ -858,6 +859,28 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
         notes = DEFAULT_PHRASE
     start = live.send("start_audition", track_index=track_index, beats=beats,
                       notes=[n.model_dump() for n in notes] if notes else None, clip_index=clip_index)
+    return _finish_listen(start, f"track{track_index}", f"Track {track_index}", compare_to)
+
+
+@tool()
+def listen_to_mix(bar: float = 1, bars: int = 8, compare_to: Optional[str] = None):
+    """Hear the whole song: Ghost plays the Arrangement from a bar (nothing soloed), records the
+    master output through Resampling and measures it like listen_to_track, plus loudness
+    (LUFS) and peak. Use it to mix and master: check a drop, a breakdown, the low end of the
+    full mix. bars: up to 16. compare_to: a reference track path (e.g. from
+    find_reference_tracks) or 'last'. Stops Live's playback while it records."""
+    bars = max(1, min(16, int(bars)))
+    info = live.send("get_session_info")
+    bpb = float(str(info.get("time_signature", "4/4")).split("/")[0])
+    live.send("set_song_time", beat=(float(bar) - 1) * bpb)
+    time.sleep(0.4)  # Live moves the playhead on its next update
+    start = live.send("start_audition", track_index=-1, beats=bars * bpb)
+    return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
+                          loudness=True)
+
+
+def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
+                   loudness: bool = False):
     try:
         time.sleep(start["wait_seconds"])
         for _ in range(40):
@@ -871,7 +894,7 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
             raise LiveError(r.get("error") or "Live didn't report a recorded file")
         _wait_for_file(r["file"])
         LISTEN_DIR.mkdir(parents=True, exist_ok=True)
-        dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_track{track_index}.wav"
+        dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}.wav"
         for attempt in range(12):  # Live may still hold the new recording open on Windows
             try:
                 shutil.copyfile(r["file"], dest)
@@ -885,7 +908,63 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
             live.send("end_audition")
         except LiveError:
             pass
-    return _report(str(dest), f"Track {track_index}", compare_to)
+    out = _report(str(dest), title, compare_to)
+    if loudness:
+        out = _add_loudness(out, str(dest))
+    return out
+
+
+def _add_loudness(out, path: str):
+    """Add integrated loudness (LUFS, ITU-R BS.1770) and true-ish peak to a listen report."""
+    try:
+        import json as _json
+        import numpy as np
+        import soundfile as sf
+        y, sr = sf.read(path, always_2d=True)
+        lufs = _lufs(y, sr)
+        peak = 20 * np.log10(max(float(np.max(np.abs(y))), 1e-9))
+        data = _json.loads(out[0])
+        data.setdefault("measurements", {})["lufs_integrated"] = lufs
+        data["measurements"]["sample_peak_db"] = round(peak, 2)
+        data.setdefault("heard", []).append(
+            f"Loudness: {lufs} LUFS integrated, peak {peak:.1f} dBFS.")
+        return [_json.dumps(data, indent=1)] + list(out[1:])
+    except Exception as e:  # loudness is a bonus; never fail the listen over it
+        import sys
+        print("loudness measurement failed: %s" % e, file=sys.stderr)
+        return out
+
+
+def _lufs(y, sr: int):
+    """Integrated loudness per ITU-R BS.1770-4 (K-weighting, 400 ms blocks, gating)."""
+    import numpy as np
+    from scipy.signal import lfilter
+    import math
+    # K-weighting: high shelf then high-pass (coefficients derived for any sample rate)
+    f0, G, Q = 1681.974450955533, 3.999843853973347, 0.7071752369554196
+    K = math.tan(math.pi * f0 / sr)
+    Vh = 10 ** (G / 20)
+    Vb = Vh ** 0.4996667741545416
+    a0 = 1 + K / Q + K * K
+    b1 = [(Vh + Vb * K / Q + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0]
+    a1 = [1, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0]
+    f0, Q = 38.13547087602444, 0.5003270373238773
+    K = math.tan(math.pi * f0 / sr)
+    a2 = [1, 2 * (K * K - 1) / (1 + K / Q + K * K), (1 - K / Q + K * K) / (1 + K / Q + K * K)]
+    b2 = [1, -2, 1]
+    z = lfilter(b2, a2, lfilter(b1, a1, y, axis=0), axis=0)
+    block, step = int(0.4 * sr), int(0.1 * sr)
+    if z.shape[0] < block:
+        return None
+    ms = np.array([np.mean(z[i:i + block] ** 2, axis=0).sum()
+                   for i in range(0, z.shape[0] - block + 1, step)])
+    lk = -0.691 + 10 * np.log10(np.maximum(ms, 1e-12))
+    gated = ms[lk > -70]
+    if not gated.size:
+        return None
+    rel = -0.691 + 10 * np.log10(gated.mean()) - 10
+    final = ms[(lk > -70) & (lk > rel)]
+    return round(float(-0.691 + 10 * np.log10(final.mean())), 1)
 
 
 @tool()

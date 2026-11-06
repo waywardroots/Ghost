@@ -77,12 +77,25 @@ class CommandHandler(object):
     def _tracks(self):
         return list(self.song.tracks)
 
+    MASTER = -1  # track_index -1 addresses the Master track (devices, volume)
+
     def _track(self, track_index):
+        if track_index == self.MASTER and getattr(self.song, "master_track", None) is not None:
+            return self.song.master_track
         tracks = self._tracks()
         if not isinstance(track_index, int) or not 0 <= track_index < len(tracks):
             raise CommandError("track_index %r is out of range (this set has %d tracks, "
-                               "numbered from 0)" % (track_index, len(tracks)))
+                               "numbered from 0; -1 is the Master)" % (track_index, len(tracks)))
         return tracks[track_index]
+
+    def _back_to_arrangement(self):
+        """Press Live's 'Back to Arrangement' so every track follows the timeline again
+        (firing a Session clip takes that track off it)."""
+        try:
+            if getattr(self.song, "back_to_arranger", False):
+                self.song.back_to_arranger = False
+        except Exception:
+            pass
 
     def _slot(self, track, clip_index, create_scenes=False):
         if not isinstance(clip_index, int) or clip_index < 0:
@@ -112,15 +125,17 @@ class CommandHandler(object):
         return "other"
 
     def _track_summary(self, index, track):
+        is_master = track is getattr(self.song, "master_track", None)
         return {
             "index": index,
             "name": track.name,
-            "type": self._track_type(track),
+            "type": "master" if is_master else self._track_type(track),
             "mute": bool(getattr(track, "mute", False)),
             "solo": bool(getattr(track, "solo", False)),
             "arm": bool(track.arm) if getattr(track, "can_be_armed", False) else None,
             "devices": [d.name for d in track.devices],
-            "clips": [i for i, s in enumerate(track.clip_slots) if s.has_clip],
+            "clips": [i for i, s in enumerate(getattr(track, "clip_slots", []) or [])
+                      if s.has_clip],
         }
 
     def _select_track(self, track):
@@ -149,7 +164,7 @@ class CommandHandler(object):
                             "parameter_count": len(list(d.parameters))}
                            for i, d in enumerate(t.devices)]
         clips = []
-        for i, slot in enumerate(t.clip_slots):
+        for i, slot in enumerate(getattr(t, "clip_slots", []) or []):
             if slot.has_clip:
                 c = slot.clip
                 clips.append({"clip_index": i, "name": c.name, "length_beats": float(c.length),
@@ -209,6 +224,8 @@ class CommandHandler(object):
         return {"track_index": track_index, "name": name}
 
     def cmd_delete_track(self, track_index):
+        if track_index == self.MASTER:
+            raise CommandError("the Master track can't be deleted")
         name = self._track(track_index).name
         self.song.delete_track(track_index)
         return {"deleted": name}
@@ -911,13 +928,19 @@ class CommandHandler(object):
         beats = float(beats)
         if not 1 <= beats <= 64:
             raise CommandError("beats must be between 1 and 64")
-        src = self._track(track_index)
         song = self.song
+        mix = track_index == self.MASTER
+        src = None if mix else self._track(track_index)
         state = {"src": src, "solos": [(t, bool(t.solo)) for t in self._tracks()],
-                 "created_scene": None, "src_slot": None, "temp_clip": False}
+                 "created_scene": None, "src_slot": None, "temp_clip": False, "mix": mix}
 
         # what to play
-        if clip_index is None:
+        if mix:  # the whole Arrangement from the playhead (set it with set_song_time first)
+            self._back_to_arrangement()
+            song.create_scene(-1)
+            state["created_scene"] = len(list(song.scenes)) - 1
+            slot = None
+        elif clip_index is None:
             if not notes:
                 raise CommandError("give notes to play, or the clip_index of an existing clip")
             if self._track_type(src) != "midi":
@@ -956,10 +979,12 @@ class CommandHandler(object):
             for t in self._tracks():  # hear only the source; solos are restored afterwards
                 if t is not src and getattr(t, "solo", False):
                     t.solo = False
-            src.solo = True
+            if src is not None:
+                src.solo = True
             listen_slot = list(listen.clip_slots)[state["created_scene"]]
             state["listen_slot"] = listen_slot
-            slot.fire()
+            if slot is not None:
+                slot.fire()
             try:
                 listen_slot.fire(record_length=beats)
                 state["auto_stop"] = True
@@ -972,7 +997,10 @@ class CommandHandler(object):
             raise
         self._audition = state
         seconds = (beats + 4.0) * 60.0 / float(song.tempo)  # + up to one bar of launch delay
-        return {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
+        out = {"recording": True, "wait_seconds": round(seconds + 0.5, 2), "beats": beats}
+        if mix:
+            out["from_bar"] = round(float(song.current_song_time) / self._beats_per_bar() + 1, 3)
+        return out
 
     def cmd_finish_audition(self):
         """Stop the recording (if it's done) and return the recorded file. Cleanup is separate
@@ -1013,6 +1041,7 @@ class CommandHandler(object):
             tracks = self._tracks()
             if listen in tracks:
                 song.delete_track(tracks.index(listen))
+        self._back_to_arrangement()
         if st.get("temp_clip") and st.get("src_slot") is not None and st["src_slot"].has_clip:
             st["src_slot"].delete_clip()
         row = st.get("created_scene")

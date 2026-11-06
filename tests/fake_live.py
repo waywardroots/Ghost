@@ -208,10 +208,16 @@ class ClipSlot:
             assert tr.input_routing_type.display_name == "Resampling", "fake only records resampling"
             assert tr.current_monitoring_state == 2, "monitoring should be Off"
             soloed = [t for t in SONG.tracks if t.solo]
-            assert len(soloed) == 1, "exactly the source track should be soloed"
             beats = record_length or 8.0
             c = Clip(beats, is_midi=False, name="recording")
-            c.file_path = render_track(soloed[0], beats * 60.0 / SONG.tempo)
+            if soloed:
+                assert len(soloed) == 1, "exactly the source track should be soloed"
+                c.file_path = render_track(soloed[0], beats * 60.0 / SONG.tempo)
+            else:  # the whole mix: the arrangement plays from the playhead
+                assert not SONG.back_to_arranger, "tracks must follow the Arrangement"
+                synths = [t for t in SONG.tracks if t.has_midi_input and t.devices]
+                c.file_path = render_track(synths[0], beats * 60.0 / SONG.tempo)
+                SONG.mix_recorded_from = SONG.current_song_time
             c.is_recording = False
             self.clip = c
 
@@ -339,6 +345,10 @@ class Song:
         self.cue_points = []
         self._song_time = 0.0
         self._pending_time = None
+        self.back_to_arranger = False
+        self.master_track = Track("other", "Master", 0)
+        self.master_track.has_audio_input = False
+        self.master_track.can_be_armed = False
 
     @property
     def current_song_time(self):
