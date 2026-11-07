@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from indexer import app_dir, build_profile, normalize_key_query, open_db  # noqa: E402
 import presets  # noqa: E402
 import style  # noqa: E402
+import midi_model  # noqa: E402
 
 import listen  # noqa: E402
 
@@ -158,7 +159,7 @@ def tool():
         def inner(*a, **kw):
             try:
                 return fn(*a, **kw)
-            except (LiveError, presets.PresetError) as e:
+            except (LiveError, presets.PresetError, midi_model.ModelError, style.StyleError) as e:
                 return {"error": str(e)}
             except Exception as e:  # never fail silently: say what broke
                 import traceback
@@ -1238,6 +1239,54 @@ def write_my_pattern(track_index: int, clip_index: int, pattern_id: str,
               replace=True)
     info.update(track_index=track_index, clip_index=clip_index)
     return info
+
+
+MODEL_PATH = Path(os.environ.get("GHOST_MIDI_MODEL", str(app_dir() / "model" / "ghost_midi.npz")))
+_model_cache: dict = {}
+
+
+def _style_model() -> "midi_model.Model":
+    """The trained your-style model, reloaded whenever train_midi_model.py saves a new one."""
+    m = _model_cache.get("m")
+    if m is None or not MODEL_PATH.exists() or MODEL_PATH.stat().st_mtime != m.mtime:
+        m = _model_cache["m"] = midi_model.Model(MODEL_PATH)
+    return m
+
+
+@tool()
+def generate_part(track_index: int, clip_index: int, role: str, key: str = "D minor",
+                  bars: int = 4, octave: int = 0, temperature: float = 0.9,
+                  seed: Optional[int] = None, in_key: bool = True, takes: int = 1,
+                  name: Optional[str] = None, overwrite: bool = False) -> dict:
+    """Write a brand-new part with the user's own trained model (learned from every part in
+    their projects - see train_midi_model.py). Unlike write_my_pattern, nothing is copied:
+    the model writes a new phrase in their style.
+    role: bass, arp, lead, chords or pad. key: the song's key. bars: 1-8 are written fresh;
+    longer clips repeat the phrase. temperature: 0.6 = safe and typical of them, 0.9 =
+    balanced, 1.2 = adventurous. in_key keeps every note in the key. takes > 1 writes several
+    different takes into consecutive clip slots from clip_index so they can be auditioned.
+    A seed gives the same take again."""
+    if role not in midi_model.ROLES:
+        raise LiveError(f"role must be one of {', '.join(midi_model.ROLES)}")
+    model = _style_model()
+    bars = max(1, min(int(bars), 64))
+    takes = max(1, min(int(takes), 8))
+    seed = int(seed) if seed is not None else int(time.time() * 1000) % (1 << 30)
+    out = []
+    for n in range(takes):
+        notes, info = midi_model.make_part(model, role, key=key, bars=bars, octave=octave,
+                                           temperature=temperature, seed=seed + 100 * n,
+                                           in_key=in_key)
+        slot = clip_index + n
+        live.send("create_clip", track_index=track_index, clip_index=slot, length=bars * 4,
+                  name=(name or f"Ghost {role}") + (f" {n + 1}" if takes > 1 else ""),
+                  overwrite=overwrite)
+        if notes:
+            live.send("add_notes", track_index=track_index, clip_index=slot, notes=notes,
+                      replace=True)
+        info.update(track_index=track_index, clip_index=slot)
+        out.append(info)
+    return {"takes": out} if takes > 1 else out[0]
 
 
 # ----------------------------------------------------------------------------

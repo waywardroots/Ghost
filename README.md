@@ -108,9 +108,11 @@ python tests/test_presets.py
 python tests/test_midi_dataset.py
 python tests/test_style.py
 python tests/test_reference_scan.py
+python tests/test_midi_model.py
 ```
-Runs the full chain against a simulated Live, plus preset-file, dataset, pattern and
-reference tests (200 checks).
+Runs the full chain against a simulated Live, plus preset-file, dataset, pattern, reference
+and model tests (217 checks). The simulated Live hands out a new wrapper object on every
+read, like the real one, so compare Live objects with `==`, never `is`.
 
 ---
 
@@ -140,6 +142,28 @@ this track"*, *"find my Diva arps around 125"*, *"use my drum groove from Night 
   are), fitted to the length, and varied a little so it's a new take in your style rather
   than a copy. `variation` 0 = exact, 0.3 = fresh take, 1 = loose; a different `seed`
   gives a different take.
+
+### Step 3: train your own model
+A small transformer learns from every bassline, arp, lead, chord and pad part in your
+projects, then writes brand-new parts in your style - not copies.
+
+```
+py -3.13 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+py -3.13 train_midi_model.py --stats     # what it will learn from
+py -3.13 train_midi_model.py             # train on the first GPU (--gpu 1 for the second)
+```
+Each part is moved to C first, so the model learns your shapes and intervals rather than
+which key a project happened to be in. Projects are split so the model is scored on songs
+it never trained on; training stops when that score stops improving and saves
+`MusicAssistant\model\ghost_midi.npz`. Retrain whenever you've added projects (run
+`midi_dataset.py` first); Ghost picks up the new model straight away.
+
+Then ask for *"a new 8-bar bassline in D minor, give me three takes"*:
+
+- `generate_part` writes a new part (bass, arp, lead, chords or pad) in the song's key.
+  `temperature` 0.6 = safe and typical of you, 0.9 = balanced, 1.2 = adventurous;
+  `takes` writes several into consecutive clip slots to audition; a `seed` repeats a take.
+  Ghost runs the model itself with numpy, so the connector doesn't need PyTorch.
 
 ---
 

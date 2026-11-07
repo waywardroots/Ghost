@@ -458,6 +458,23 @@ def main():
         check("pattern errors come back as messages",
               "error" in ms.write_my_pattern(bass, 7, "missing-id"))
 
+        # your-style model: a new part written by the trained model (a random one here)
+        from test_midi_model import random_model
+        ms.MODEL_PATH = Path(_tf.mkdtemp()) / "missing.npz"
+        r = ms.generate_part(bass, 8, "bass")
+        check("generate_part without a model explains how to train one",
+              "train_midi_model.py" in r.get("error", ""))
+        ms.MODEL_PATH = ms.MODEL_PATH.with_name("m.npz")
+        random_model(ms.MODEL_PATH)
+        r = ms.generate_part(bass, 8, "bass", key="D minor", bars=2, seed=5, takes=2, overwrite=True)
+        got = [ms.get_notes(bass, 8)["notes"], ms.get_notes(bass, 9)["notes"]]
+        check("generate_part writes takes in the song's key",
+              len(r["takes"]) == 2 and r["takes"][1]["clip_index"] == 9
+              and all(n["start"] < 8 for g in got for n in g)
+              and all((n["pitch"] - 2) % 12 in ms.midi_model.SCALES["minor"] for g in got for n in g)
+              and got[0] != got[1])
+        check("generate_part refuses unknown roles", "error" in ms.generate_part(bass, 10, "drums"))
+
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")
         info = ms.get_device_parameters(vox, len(song.tracks[vox].devices) - 1)
