@@ -111,7 +111,7 @@ python tests/test_reference_scan.py
 python tests/test_midi_model.py
 ```
 Runs the full chain against a simulated Live, plus preset-file, dataset, pattern, reference
-and model tests (217 checks). The simulated Live hands out a new wrapper object on every
+model and audio-transcription tests (233 checks). The simulated Live hands out a new wrapper object on every
 read, like the real one, so compare Live objects with `==`, never `is`.
 
 ---
@@ -157,6 +157,22 @@ which key a project happened to be in. Projects are split so the model is scored
 it never trained on; training stops when that score stops improving and saves
 `MusicAssistant\model\ghost_midi.npz`. Retrain whenever you've added projects (run
 `midi_dataset.py` first); Ghost picks up the new model straight away.
+
+#### Also learn from the music you own
+```
+py -3.13 -m pip install demucs mutagen
+py -3.13 music_dataset.py "F:\Music\Melodic Techno Playlists" --limit 5   # try a few first
+py -3.13 music_dataset.py "F:\Music\Melodic Techno Playlists"             # all (resumes)
+py -3.13 train_midi_model.py
+```
+Each track is split into stems with Demucs on the GPU; the tempo and bar grid come from the
+kick, the key from the tags (or measured), and the bassline and main lead/arp line are read
+note by note on the 16th grid into 8-bar phrases (`MusicAssistant\music_dataset.jsonl`).
+The trainer marks those phrases as *from your collection* and Ghost always asks the model
+for *yours*, so the extra tracks teach it musical shape without replacing your style
+(`--mine-weight` sets how much your own parts count; `--no-music` leaves them out).
+Every generated take is checked against the collection phrases and rewritten if it's too
+close to an existing hook.
 
 Then ask for *"a new 8-bar bassline in D minor, give me three takes"*:
 

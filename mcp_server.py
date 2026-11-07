@@ -1243,6 +1243,8 @@ def write_my_pattern(track_index: int, clip_index: int, pattern_id: str,
 
 MODEL_PATH = Path(os.environ.get("GHOST_MIDI_MODEL", str(app_dir() / "model" / "ghost_midi.npz")))
 _model_cache: dict = {}
+MUSIC_PHRASES = midi_model.Fingerprints(Path(os.environ.get(
+    "GHOST_MUSIC_DATASET", str(app_dir() / "music_dataset.jsonl"))))
 
 
 def _style_model() -> "midi_model.Model":
@@ -1265,7 +1267,9 @@ def generate_part(track_index: int, clip_index: int, role: str, key: str = "D mi
     longer clips repeat the phrase. temperature: 0.6 = safe and typical of them, 0.9 =
     balanced, 1.2 = adventurous. in_key keeps every note in the key. takes > 1 writes several
     different takes into consecutive clip slots from clip_index so they can be auditioned.
-    A seed gives the same take again."""
+    A seed gives the same take again. Takes are checked against the phrases read from the
+    user's music collection and re-written if one is too close to an existing hook
+    (closest_to_collection: share of notes matching; a warning says if none could avoid it)."""
     if role not in midi_model.ROLES:
         raise LiveError(f"role must be one of {', '.join(midi_model.ROLES)}")
     model = _style_model()
@@ -1276,7 +1280,7 @@ def generate_part(track_index: int, clip_index: int, role: str, key: str = "D mi
     for n in range(takes):
         notes, info = midi_model.make_part(model, role, key=key, bars=bars, octave=octave,
                                            temperature=temperature, seed=seed + 100 * n,
-                                           in_key=in_key)
+                                           in_key=in_key, avoid=MUSIC_PHRASES)
         slot = clip_index + n
         live.send("create_clip", track_index=track_index, clip_index=slot, length=bars * 4,
                   name=(name or f"Ghost {role}") + (f" {n + 1}" if takes > 1 else ""),

@@ -2,7 +2,8 @@
 Train Ghost's your-style MIDI model on your PC's GPU.
 
 It learns from midi_dataset.jsonl (the parts in your own projects, built by midi_dataset.py)
-and saves MusicAssistant/model/ghost_midi.npz, which Ghost's generate_part tool uses.
+plus music_dataset.jsonl if you've made one (phrases read from tracks you own, built by
+music_dataset.py; tagged so Ghost still asks the model for *your* style), and saves MusicAssistant/model/ghost_midi.npz, which Ghost's generate_part tool uses.
 
 One-time setup (PyTorch with CUDA; pick the line for your setup at https://pytorch.org):
     py -3.13 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
@@ -126,6 +127,11 @@ def to_tensor(torch, data, idx, device):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=str(app_dir() / "midi_dataset.jsonl"))
+    ap.add_argument("--music", default=str(app_dir() / "music_dataset.jsonl"),
+                    help="phrases read from your music collection (music_dataset.py); used if it exists")
+    ap.add_argument("--no-music", action="store_true", help="learn from your own projects only")
+    ap.add_argument("--mine-weight", type=int, default=2,
+                    help="how many times each of your own phrases counts against one from the collection")
     ap.add_argument("--out", default=str(app_dir() / "model" / "ghost_midi.npz"))
     ap.add_argument("--tempo", help="only projects in this BPM range, e.g. 118-135")
     ap.add_argument("--gpu", type=int, default=0, help="which GPU (0, 1, ...)")
@@ -144,12 +150,17 @@ def main():
     a = ap.parse_args()
 
     tempo = tuple(float(x) for x in a.tempo.split("-")) if a.tempo else None
-    train, val, stats = mm.build_dataset(Path(a.data), tempo=tempo)
+    files = [Path(a.data)]
+    if not a.no_music and Path(a.music).exists():
+        files.append(Path(a.music))
+    train, val, stats = mm.build_dataset(files, tempo=tempo)
     train = [t for t in train if len(t) <= a.context]
     val = [t for t in val if len(t) <= a.context]
     print(f"{stats['used_clips']} of {stats['clips']} clips usable -> {len(train)} training and "
           f"{len(val)} validation phrases ({stats['train_tokens']:,} tokens)")
     print("by role:", ", ".join(f"{r} {n}" for r, n in sorted(stats["by_role"].items())))
+    print("by source:", ", ".join(f"{'your projects' if s == 'mine' else 'your music collection'} {n}"
+                                  for s, n in sorted(stats["by_source"].items())))
     if a.stats:
         return
     if not train or not val:
@@ -159,6 +170,8 @@ def main():
         import torch
     except ImportError:
         sys.exit("PyTorch isn't installed - see the setup line at the top of this file")
+    if stats["by_source"].get("music"):        # keep your own parts the main voice
+        train = train + [t for t in train if mm.is_source(t, "mine")] * (max(1, a.mine_weight) - 1)
     torch.manual_seed(a.seed)
     rng = random.Random(a.seed)
     if torch.cuda.is_available():
@@ -171,6 +184,7 @@ def main():
     cfg = {"name": "ghost_midi", "vocab": len(mm.VOCAB), "dim": a.dim, "layers": a.layers,
            "heads": a.heads, "context": a.context, "dropout": a.dropout,
            "pitch_range": stats["pitch_range"], "by_role": stats["by_role"],
+           "by_source": stats["by_source"],
            "tempo": a.tempo, "trained": time.strftime("%Y-%m-%d %H:%M")}
     net = build_net(torch, cfg).to(device)
     print(f"model: {sum(p.numel() for p in net.parameters()) / 1e6:.1f}M parameters")
@@ -226,8 +240,9 @@ def main():
 
     print(f"\nbest model saved to {out} (validation {best:.3f})")
     model = mm.Model(out)
+    avoid = mm.Fingerprints(Path(a.music)) if len(files) > 1 else None
     for role in ("bass", "arp", "lead"):
-        notes, info = mm.make_part(model, role, "D minor", bars=2, seed=1)
+        notes, info = mm.make_part(model, role, "D minor", bars=2, seed=1, avoid=avoid)
         print(f"sample {role}: {len(notes)} notes, first: "
               + " ".join(f"{n['pitch']}@{n['start']}" for n in notes[:8]))
 

@@ -72,7 +72,7 @@ def main():
     check("an 8-beat clip is one 2-bar phrase", len(wins) == 1 and wins[0][1] == 2)
     toks = wins[0][0]
     check("header: role, mode, length",
-          [V.itos[t] for t in toks[:4]] == ["BOS", "ROLE_bass", "MODE_minor", "LEN_2"])
+          [V.itos[t] for t in toks[:5]] == ["BOS", "SRC_mine", "ROLE_bass", "MODE_minor", "LEN_2"])
     notes = mm.decode(toks)
     check("D minor is moved to C minor (down 2)", [n[0] for n in notes] == [36, 39, 34, 36])
     check("timing and lengths survive", [n[1] for n in notes] == [0.5, 1.5, 4.0, 7.75]
@@ -92,6 +92,14 @@ def main():
         tr, va, st = mm.build_dataset(js)
         check("identical phrases are only kept once", len(tr) + len(va) == 2)
         check("pitch ranges are measured per role", "bass" in st["pitch_range"])
+        mus = Path(d) / "music.jsonl"
+        mus.write_text(json.dumps(dict(clip, project="F:/Music/a.mp3", source="music", id="m",
+                                       notes=[[50, b / 2, .25, 100] for b in range(16)])))
+        tr2, va2, st2 = mm.build_dataset([js, mus])
+        check("music-collection phrases are marked and only used for training",
+              st2["by_source"].get("music") == 1 and all(mm.is_source(t, "mine") for t in va2)
+              and sum(mm.is_source(t, "music") for t in tr2) == 1
+              and st2["pitch_range"] == st["pitch_range"])
 
         # inference
         m = random_model(Path(d) / "m.npz")
@@ -103,9 +111,11 @@ def main():
             t = m.generate("bass", "minor", bars=4, seed=seed, temperature=1.2)
             kinds = [V.kind(x) for x in t]
             ok &= kinds.count("BAR") == 4 and t[-1] == V.EOS
-            body = [x for x in t[4:] if V.kind(x) in ("POS", "PITCH", "DUR", "VEL")]
+            body = [x for x in t[5:] if V.kind(x) in ("POS", "PITCH", "DUR", "VEL")]
             ok &= [V.kind(x) for x in body] == ["POS", "PITCH", "DUR", "VEL"] * (len(body) // 4)
-            for n in mm.decode(t):
+            dec = mm.decode(t)
+            ok &= len({(n[1], n[0]) for n in dec}) == len(dec)       # no doubled notes
+            for n in dec:
                 ok &= n[0] % 12 in mm.SCALES["minor"] and 30 <= n[0] <= 60 and n[1] < 16
         check("generated parts are well formed, in key, in range, 4 bars", ok)
         out, info = mm.make_part(m, "bass", "F minor", bars=12, seed=3, octave=-1)
@@ -114,6 +124,16 @@ def main():
         check("make_part moves to the song's key and fits 12 bars", ok and pcs <= set(mm.SCALES["minor"])
               and info["key"] == "F minor" and info["bars"] == 12)
         same = mm.make_part(m, "bass", "F minor", bars=12, seed=3, octave=-1)[0]
+        # the copy check: a collection that holds exactly the part the model writes
+        notes_c = mm.decode(m.generate("bass", "minor", 4, seed=11, temperature=1.2))
+        fp_file = Path(d) / "fp.jsonl"
+        fp_file.write_text(json.dumps(dict(clip, project="F:/Music/hook.mp3", source="music",
+                                           key="C minor", length_beats=32, notes=notes_c)))
+        fp = mm.Fingerprints(fp_file)
+        check("the copy check spots a phrase from the collection", fp.closest(notes_c, 4)[0] == 1.0)
+        out2, info2 = mm.make_part(m, "bass", "C minor", bars=4, seed=11, temperature=1.2, avoid=fp)
+        check("a take that copies the collection is replaced by another",
+              info2["seed"] != 11 and info2["closest_to_collection"] <= 0.6 and "warning" not in info2)
         check("same seed, same part", same == out)
         try:
             mm.Model(Path(d) / "missing.npz")

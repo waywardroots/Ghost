@@ -10,7 +10,7 @@ train_midi_model.py, and runs a trained model with numpy alone, so Ghost's conne
 doesn't need PyTorch to use it. Training happens in train_midi_model.py on your GPU.
 
 How a part becomes tokens (16th-note grid, 4/4):
-    BOS ROLE_bass MODE_minor LEN_4  BAR POS_0 PITCH_38 DUR_2 VEL_6  POS_2 ...  BAR ...  EOS
+    BOS SRC_mine ROLE_bass MODE_minor LEN_4  BAR POS_0 PITCH_38 DUR_2 VEL_6  POS_2 ...  BAR ...  EOS
 Every part is moved to C (C minor or C major) first, so the model learns your shapes
 and intervals rather than which key a project happened to be in; on the way out the
 notes are moved to the song's key.
@@ -28,6 +28,7 @@ import numpy as np
 import style
 
 ROLES = ("bass", "arp", "lead", "chords", "pad")
+SOURCES = ("mine", "music")   # your own projects / phrases read from tracks you own
 MODES = ("minor", "major")
 MAX_BARS = 8
 STEPS = 16          # 16th notes per bar
@@ -44,6 +45,7 @@ class ModelError(Exception):
 class Vocab:
     def __init__(self):
         self.itos = ["PAD", "BOS", "EOS", "BAR"]
+        self.itos += [f"SRC_{s}" for s in SOURCES]
         self.itos += [f"ROLE_{r}" for r in ROLES]
         self.itos += [f"MODE_{m}" for m in MODES]
         self.itos += [f"LEN_{b}" for b in range(1, MAX_BARS + 1)]
@@ -54,6 +56,7 @@ class Vocab:
         self.stoi = {s: i for i, s in enumerate(self.itos)}
         self.PAD, self.BOS, self.EOS, self.BAR = 0, 1, 2, 3
         first = lambda prefix: self.stoi[prefix]
+        self.src0 = first("SRC_mine")
         self.role0, self.mode0, self.len0 = first("ROLE_bass"), first("MODE_minor"), first("LEN_1")
         self.pos0, self.pitch0 = first("POS_0"), first("PITCH_0")
         self.dur0, self.vel0 = first("DUR_1"), first("VEL_0")
@@ -82,16 +85,21 @@ def bin_vel(b) -> int:
     return int(b * 128 / VEL_BINS + 64 / VEL_BINS)
 
 
-def encode_window(notes, role: str, mode: str, bars: int) -> list[int]:
+def encode_window(notes, role: str, mode: str, bars: int, source: str = "mine") -> list[int]:
     """notes: [pitch (already in C), step 0.., dur steps, velocity] inside the window."""
     V = VOCAB
-    toks = [V.BOS, V.role0 + ROLES.index(role), V.mode0 + MODES.index(mode), V.len0 + bars - 1]
+    toks = [V.BOS, V.src0 + SOURCES.index(source), V.role0 + ROLES.index(role),
+            V.mode0 + MODES.index(mode), V.len0 + bars - 1]
     by_bar = [[] for _ in range(bars)]
     for p, s, d, v in notes:
         by_bar[s // STEPS].append((s % STEPS, p, d, v))
     for bar in by_bar:
         toks.append(V.BAR)
+        last = None
         for pos, p, d, v in sorted(bar):
+            if (pos, p) == last:              # the same note twice on one step
+                continue
+            last = (pos, p)
             toks += [V.pos0 + pos, V.pitch0 + p, V.dur0 + d - 1, V.vel0 + vel_bin(v)]
     toks.append(V.EOS)
     return toks
@@ -120,6 +128,10 @@ def decode(toks) -> list[list]:
 
 
 # ---------------------------------------------------------------------------- dataset
+def _source(c) -> str:
+    return "music" if c.get("source") == "music" else "mine"
+
+
 def clip_windows(c: dict) -> list[tuple[list[int], int]]:
     """One stored clip -> token windows of up to 8 bars (hop 4 bars). Returns [] for clips
     that can't be used (drums/fx, unknown key, empty)."""
@@ -151,41 +163,49 @@ def clip_windows(c: dict) -> list[tuple[list[int], int]]:
         end = w0 + bars * STEPS
         part = [[p, s - w0, min(d, end - s), v] for p, s, d, v in notes if w0 <= s < end]
         if len(part) >= 2:
-            out.append((encode_window(part, c["role"], key[1], bars), bars))
+            out.append((encode_window(part, c["role"], key[1], bars, _source(c)), bars))
         if end >= length:
             break
     return out
 
 
-def build_dataset(jsonl: Path, val_share: float = 0.1, tempo: tuple | None = None):
-    """-> (train, val, stats). Windows are de-duplicated; the validation set is whole
-    projects the model never trains on, so its score shows how well it generalises."""
+def build_dataset(files, val_share: float = 0.1, tempo: tuple | None = None):
+    """-> (train, val, stats). files: midi_dataset.jsonl and optionally music_dataset.jsonl.
+    Windows are de-duplicated. The validation set is whole projects of yours the model never
+    trains on, so its score shows how well it writes *your* parts; phrases from your music
+    collection are all used for training."""
+    if isinstance(files, (str, Path)):
+        files = [files]
     train, val, seen = [], [], set()
-    stats = {"clips": 0, "used_clips": 0, "by_role": {}, "pitch_range": {}}
+    stats = {"clips": 0, "used_clips": 0, "by_role": {}, "by_source": {}, "pitch_range": {}}
     pitches = {r: [] for r in ROLES}
-    with open(jsonl, encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            c = json.loads(line)
-            stats["clips"] += 1
-            if tempo and c.get("tempo") and not tempo[0] <= float(c["tempo"]) <= tempo[1]:
-                continue
-            wins = clip_windows(c)
-            if not wins:
-                continue
-            stats["used_clips"] += 1
-            h = int(hashlib.md5(c["project"].lower().encode()).hexdigest(), 16) % 1000
-            dest = val if h < val_share * 1000 else train
-            for toks, _ in wins:
-                t = tuple(toks)
-                if t in seen:
+    for jsonl in files:
+        with open(jsonl, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
                     continue
-                seen.add(t)
-                dest.append(toks)
-                stats["by_role"][c["role"]] = stats["by_role"].get(c["role"], 0) + 1
-                pitches[c["role"]] += [x - VOCAB.pitch0 for x in toks
-                                       if VOCAB.kind(x) == "PITCH"]
+                c = json.loads(line)
+                stats["clips"] += 1
+                if tempo and c.get("tempo") and not tempo[0] <= float(c["tempo"]) <= tempo[1]:
+                    continue
+                wins = clip_windows(c)
+                if not wins:
+                    continue
+                stats["used_clips"] += 1
+                src = _source(c)
+                h = int(hashlib.md5(c["project"].lower().encode()).hexdigest(), 16) % 1000
+                dest = val if src == "mine" and h < val_share * 1000 else train
+                for toks, _ in wins:
+                    t = tuple(toks)
+                    if t in seen:
+                        continue
+                    seen.add(t)
+                    dest.append(toks)
+                    stats["by_role"][c["role"]] = stats["by_role"].get(c["role"], 0) + 1
+                    stats["by_source"][src] = stats["by_source"].get(src, 0) + 1
+                    if src == "mine":
+                        pitches[c["role"]] += [x - VOCAB.pitch0 for x in toks
+                                               if VOCAB.kind(x) == "PITCH"]
     for r, ps in pitches.items():
         if ps:
             lo, hi = np.percentile(ps, [1, 99])
@@ -193,6 +213,10 @@ def build_dataset(jsonl: Path, val_share: float = 0.1, tempo: tuple | None = Non
     stats["train_windows"], stats["val_windows"] = len(train), len(val)
     stats["train_tokens"] = sum(map(len, train))
     return train, val, stats
+
+
+def is_source(toks, source: str) -> bool:
+    return len(toks) > 1 and toks[1] == VOCAB.src0 + SOURCES.index(source)
 
 
 # ---------------------------------------------------------------------------- inference
@@ -265,7 +289,8 @@ class Model:
             raise ModelError(f"role must be one of {', '.join(ROLES)}")
         bars = max(1, min(MAX_BARS, int(bars)))
         rng = np.random.default_rng(seed)
-        toks = [V.BOS, V.role0 + ROLES.index(role), V.mode0 + MODES.index(mode), V.len0 + bars - 1]
+        toks = [V.BOS, V.src0 + SOURCES.index("mine"), V.role0 + ROLES.index(role),
+                V.mode0 + MODES.index(mode), V.len0 + bars - 1]
         cache = []
         for i, t in enumerate(toks[:-1]):
             self._step(t, i, cache)
@@ -276,6 +301,7 @@ class Model:
             if not in_key or p % 12 in scale:
                 pitch_ok[V.pitch0 + p] = True
         bar, last_pos, in_bar, want = 0, -1, 0, "BAR"
+        last_pitch = same_step_pitch = None
         limit = self.cfg["context"]
         while len(toks) < limit:
             lg = self._step(toks[-1], len(toks) - 1, cache)
@@ -284,13 +310,17 @@ class Model:
                 allowed[V.BAR] = True
             elif want == "NEXT":                  # a new note, the next bar, or the end
                 if in_bar < max_notes_per_bar:
-                    allowed[V.pos0 + max(last_pos, 0):V.pos0 + STEPS] = True
-                    if last_pos < 0:
-                        allowed[V.pos0] = True
+                    first = max(last_pos, 0)
+                    if last_pos >= 0 and not pitch_ok[V.pitch0 + last_pitch + 1:].any():
+                        first = last_pos + 1          # no higher note left for this step
+                    allowed[V.pos0 + first:V.pos0 + STEPS] = True
                 allowed[V.BAR] = bar < bars
                 allowed[V.EOS] = bar >= bars
             elif want == "PITCH":
                 allowed = pitch_ok.copy()
+                if same_step_pitch is not None:   # chords go upwards, no doubled notes
+                    allowed[:V.pitch0 + same_step_pitch + 1] = False
+
             elif want == "DUR":
                 allowed[V.dur0:V.dur0 + MAX_DUR] = True
             elif want == "VEL":
@@ -303,9 +333,10 @@ class Model:
             if t == V.BAR:
                 bar, last_pos, in_bar, want = bar + 1, -1, 0, "NEXT"
             elif k == "POS":
+                same_step_pitch = last_pitch if t - V.pos0 == last_pos else None
                 last_pos, in_bar, want = t - V.pos0, in_bar + 1, "PITCH"
             elif k == "PITCH":
-                want = "DUR"
+                last_pitch, want = t - V.pitch0, "DUR"
             elif k == "DUR":
                 want = "VEL"
             elif k == "VEL":
@@ -328,24 +359,69 @@ def _sample(logits, allowed, temperature, top_p, rng) -> int:
 
 
 # ---------------------------------------------------------------------------- for Ghost
+class Fingerprints:
+    """Every phrase read from the user's music collection (music_dataset.jsonl), so a new part
+    can be checked against them: the model must not hand back someone else's hook."""
+
+    def __init__(self, path: Path):
+        self.path, self._mtime, self.sets = Path(path), None, []
+
+    def load(self):
+        if not self.path.exists():
+            self.sets = []
+            return self
+        m = self.path.stat().st_mtime
+        if m != self._mtime:
+            sets = []
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        c = json.loads(line)
+                        for toks, _ in clip_windows(c):
+                            sets.append(({(round(n[1] * 4), n[0]) for n in decode(toks)},
+                                         c.get("project", "")))
+            self.sets, self._mtime = sets, m
+        return self
+
+    def closest(self, notes, bars: int) -> tuple[float, str]:
+        """Share of the new part's notes (in C, [pitch, start, ...]) found at the same place in
+        the most similar collection phrase, comparing every 4-bar offset. 1.0 = a copy."""
+        g = {(round(n[1] * 4), n[0]) for n in notes}
+        if not g:
+            return 0.0, ""
+        span, best, where = bars * STEPS, 0.0, ""
+        for f, src in self.load().sets:
+            for off in range(0, MAX_BARS * STEPS - span + 1, 4 * STEPS):
+                hit = sum(1 for s, p in g if (s + off, p) in f)
+                if hit / len(g) > best:
+                    best, where = hit / len(g), src
+        return best, where
+
+
 def make_part(model: Model, role: str, key: str = "D minor", bars: int = 4, octave: int = 0,
               temperature: float = 0.9, seed: int | None = None, in_key: bool = True,
-              tries: int = 4) -> tuple[list[dict], dict]:
-    """A new part in the song's key, as Live notes. Re-samples if a take comes out nearly
-    empty (fewer than one note per bar)."""
+              tries: int = 6, avoid: Fingerprints | None = None,
+              max_overlap: float = 0.6) -> tuple[list[dict], dict]:
+    """A new part in the song's key, as Live notes. Re-samples a take that comes out nearly
+    empty (fewer than one note per bar) or that matches a phrase from the user's music
+    collection too closely (more than max_overlap of its notes in the same places)."""
     k = style.parse_key(key) or (2, "minor")
     seed = random.randrange(1 << 30) if seed is None else int(seed)
+    unit_bars = min(bars, MAX_BARS)
     best = None
     for n in range(max(1, tries)):
-        toks = model.generate(role, k[1], min(bars, MAX_BARS), temperature=temperature,
+        toks = model.generate(role, k[1], unit_bars, temperature=temperature,
                               seed=seed + n, in_key=in_key)
         notes = decode(toks)
-        if best is None or len(notes) > len(best[0]):
-            best = (notes, seed + n)
-        if len(notes) >= min(bars, MAX_BARS):
+        overlap, src = avoid.closest(notes, unit_bars) if avoid else (0.0, "")
+        good = len(notes) >= unit_bars and overlap <= max_overlap
+        rank = (good, overlap <= max_overlap, len(notes) >= unit_bars, -overlap)
+        if best is None or rank > best[0]:
+            best = (rank, notes, seed + n, overlap, src)
+        if good:
             break
-    notes, used_seed = best
-    unit = min(bars, MAX_BARS) * 4.0
+    _, notes, used_seed, overlap, src = best
+    unit = unit_bars * 4.0
     shift = -_to_c(k[0]) + 12 * int(octave)
     out, total = [], bars * 4.0
     reps = math.ceil(total / unit)
@@ -356,6 +432,12 @@ def make_part(model: Model, role: str, key: str = "D minor", bars: int = 4, octa
                 out.append({"pitch": int(max(0, min(127, p + shift))), "start": round(t, 4),
                             "duration": round(min(d, total - t), 4), "velocity": int(v)})
     out.sort(key=lambda n: (n["start"], n["pitch"]))
-    return out, {"role": role, "key": style.key_name(k), "bars": bars, "seed": used_seed,
-                 "temperature": temperature, "note_count": len(out),
-                 "model": model.cfg.get("name", model.path.name)}
+    info = {"role": role, "key": style.key_name(k), "bars": bars, "seed": used_seed,
+            "temperature": temperature, "note_count": len(out),
+            "model": model.cfg.get("name", model.path.name)}
+    if avoid is not None:
+        info["closest_to_collection"] = round(overlap, 2)
+        if overlap > max_overlap:
+            info["warning"] = (f"{overlap:.0%} of the notes match a phrase in "
+                               f"{Path(src).name} - try another seed or a higher temperature")
+    return out, info
