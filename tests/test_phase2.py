@@ -240,7 +240,13 @@ def main():
                 song.tracks.pop(0)
             check("group tracks don't break arrangement/session info", ok)
             g = _Group(); song.tracks.insert(0, g)
-            member = song.tracks[1]; member.is_grouped = True; member.group_track = g
+
+            class _Ref:  # like Live: each read returns a new wrapper equal to the track
+                def __init__(self, t): self.t = t
+                def __eq__(self, other): return self.t is getattr(other, "t", other)
+                def __ne__(self, other): return not self == other
+                def __hash__(self): return id(self.t)
+            member = song.tracks[1]; member.is_grouped = True; member.group_track = _Ref(g)
             try:
                 info = ms.get_session_info()["tracks"]
                 ok = info[0].get("group_members") == [1] and info[1].get("in_group") == 0
