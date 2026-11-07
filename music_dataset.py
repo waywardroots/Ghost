@@ -181,6 +181,26 @@ def detect_key(stems, sr=SR):
     return key_from_profile(chroma.mean(axis=1))[0]
 
 
+def settle_mode(key, bass_notes):
+    """Tags often give the relative major for a minor track (same notes, different home).
+    The bassline sits on the home note most, so if it leans on the relative key's root
+    instead, switch to that key."""
+    import style
+    try:
+        k = style.parse_key(key)
+    except style.StyleError:
+        k = None
+    if not k or not bass_notes:
+        return key
+    hist = np.zeros(12)
+    for p, _, d, _ in bass_notes:
+        hist[p % 12] += d
+    rel = ((k[0] - 3) % 12, "minor") if k[1] == "major" else ((k[0] + 3) % 12, "major")
+    if hist[rel[0]] > 1.5 * hist[k[0]]:
+        return style.key_name(rel)
+    return style.key_name(k)
+
+
 def phrases(notes, phase, role, n_beats):
     """8-bar phrases from bar starts. Repeats of the same loop inside a track are kept once."""
     bar0 = phase * 4                               # in steps
@@ -210,12 +230,15 @@ def analyze_stems(stems, path: str, tag_bpm=None, tag_key=None, sr=SR) -> list[d
         return []
     phase = downbeat_phase(beats, stems, sr)
     key = tag_key or detect_key(stems, sr)
-    rows = []
+    lines = {}
     for stem, role in (("bass", "bass"), ("other", "lead")):
         y = stems.get(stem)
-        if y is None or np.sqrt(np.mean(y ** 2)) < 1e-4:
-            continue
-        notes = transcribe(y, beats, role, sr)
+        if y is not None and np.sqrt(np.mean(y ** 2)) >= 1e-4:
+            lines[stem] = (role, transcribe(y, beats, role, sr))
+    if "bass" in lines:
+        key = settle_mode(key, lines["bass"][1])
+    rows = []
+    for stem, (role, notes) in lines.items():
         for w0, r, part in phrases(notes, phase, role, len(beats)):
             bar = (w0 - phase * 4) // 16 + 1
             rid = hashlib.md5(f"{path}|{stem}|{w0}".encode()).hexdigest()[:16]

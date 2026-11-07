@@ -98,6 +98,11 @@ def main():
     check("lead line read back", len(lg & lw) / len(lw) >= 0.85)
     check("rows are in the training format", all(r["source"] == "music" and r["length_beats"] == 32
                                                   and r["key"] == "D minor" for r in rows))
+    rows2 = md.analyze_stems(stems, "C:/music/test.mp3", tag_key="F major")
+    check("a relative-major tag is corrected from the bassline (F major -> D minor)",
+          rows2 and all(r["key"] == "D minor" for r in rows2))
+    check("a right tag is kept", md.settle_mode("D minor", [[38, 0, 4, 100], [41, 4, 1, 100]]) == "D minor"
+          and md.settle_mode("C major", [[36, 0, 4, 100], [33, 4, 1, 100]]) == "C major")
     wins = mm.clip_windows(bass[0])
     check("phrases tokenise for the model", wins and wins[0][1] == 8)
     print(f"\nAll {PASSED} checks passed.")

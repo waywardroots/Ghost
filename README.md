@@ -111,7 +111,7 @@ python tests/test_reference_scan.py
 python tests/test_midi_model.py
 ```
 Runs the full chain against a simulated Live, plus preset-file, dataset, pattern, reference
-model and audio-transcription tests (233 checks). The simulated Live hands out a new wrapper object on every
+model and audio-transcription tests (235 checks). The simulated Live hands out a new wrapper object on every
 read, like the real one, so compare Live objects with `==`, never `is`.
 
 ---
