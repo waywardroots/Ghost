@@ -26,7 +26,15 @@ import sys
 import time
 from pathlib import Path
 
+import os
+import warnings
+
 import numpy as np
+
+# AMD's ROCm build is chatty: MIOpen logs every kernel it tunes on the first run, and PyTorch
+# warns that its newer attention kernels are experimental on Radeon. Neither is a problem.
+os.environ.setdefault("MIOPEN_LOG_LEVEL", "3")
+warnings.filterwarnings("ignore", message=".*attention on Current AMD GPU is still experimental.*")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import midi_model as mm  # noqa: E402
