@@ -959,27 +959,37 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
         if not r.get("file"):
             raise LiveError(r.get("error") or "Live didn't report a recorded file")
         _wait_for_file(r["file"])
-        LISTEN_DIR.mkdir(parents=True, exist_ok=True)
-        dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}.wav"
-        for attempt in range(12):  # Live may still hold the new recording open on Windows
-            try:
-                shutil.copyfile(r["file"], dest)
-                break
-            except OSError:
-                time.sleep(0.5)
-        else:
-            dest = Path(r["file"])  # analyze it where Live saved it
-        if r.get("trim_seconds") is not None:  # Arrangement recordings include the run-up
-            dest = _trim_recording(dest, r["trim_seconds"], r.get("keep_seconds"), tag)
     finally:
         try:
-            live.send("end_audition")
+            live.send("end_audition")  # removes Ghost's track, so Live lets go of the file
         except LiveError:
             pass
+    dest = _copy_recording(r["file"], tag)
+    if r.get("trim_seconds") is not None:  # Arrangement recordings include the run-up
+        dest = _trim_recording(dest, r["trim_seconds"], r.get("keep_seconds"), tag)
     out = _report(str(dest), title, compare_to)
     if loudness:
         out = _add_loudness(out, str(dest))
     return out
+
+
+def _copy_recording(src: str, tag: str, timeout: float = 15.0) -> Path:
+    """Copy Live's new recording into Ghost's folder. On Windows Live can hold the file open
+    for a few seconds after recording, so keep trying until it can be read."""
+    import soundfile as sf
+    LISTEN_DIR.mkdir(parents=True, exist_ok=True)
+    dest = LISTEN_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}.wav"
+    t0, err = time.time(), None
+    while time.time() - t0 < timeout:
+        try:
+            shutil.copyfile(src, dest)
+            sf.info(str(dest))  # a complete WAV header, not a half-written file
+            return dest
+        except (OSError, RuntimeError) as e:  # LibsndfileError is a RuntimeError
+            err = e
+            time.sleep(0.5)
+    raise LiveError(f"Live recorded {src}, but Ghost couldn't read it after "
+                    f"{timeout:.0f} seconds ({err})")
 
 
 def _trim_recording(path: Path, skip: float, keep: Optional[float], tag: str) -> Path:
