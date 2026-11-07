@@ -271,12 +271,12 @@ class Model:
             h = _ln(x, w[p + "ln1.g"], w[p + "ln1.b"])
             qkv = h @ w[p + "qkv.w"] + w[p + "qkv.b"]
             q, k, v = np.split(qkv, 3)
-            if len(cache) <= i:
-                cache.append(([], []))
-            cache[i][0].append(k.reshape(H, hd))
-            cache[i][1].append(v.reshape(H, hd))
-            K = np.stack(cache[i][0], 1)              # H, T, hd
-            Vv = np.stack(cache[i][1], 1)
+            if len(cache) <= i:                   # keys/values for every position so far
+                cache.append((np.zeros((H, c["context"], hd), np.float32),
+                              np.zeros((H, c["context"], hd), np.float32)))
+            cache[i][0][:, pos] = k.reshape(H, hd)
+            cache[i][1][:, pos] = v.reshape(H, hd)
+            K, Vv = cache[i][0][:, :pos + 1], cache[i][1][:, :pos + 1]
             att = np.einsum("hd,htd->ht", q.reshape(H, hd), K) / math.sqrt(hd)
             att = np.exp(att - att.max(-1, keepdims=True))
             att /= att.sum(-1, keepdims=True)
@@ -295,6 +295,7 @@ class Model:
         return np.stack(out)
 
     def generate(self, role: str, mode: str = "minor", bars: int = 4, temperature: float = 0.9,
+                 source: str = "mine",
                  top_p: float = 0.92, seed: int | None = None, in_key: bool = True,
                  pitch_range: tuple | None = None, max_notes_per_bar: int = 32) -> list[int]:
         """Sample one part. Every step is constrained to a valid next token (a note is always
@@ -304,7 +305,9 @@ class Model:
             raise ModelError(f"role must be one of {', '.join(ROLES)}")
         bars = max(1, min(MAX_BARS, int(bars)))
         rng = np.random.default_rng(seed)
-        toks = [V.BOS, V.src0 + SOURCES.index("mine"), V.role0 + ROLES.index(role),
+        if source not in SOURCES:
+            raise ModelError(f"source must be one of {', '.join(SOURCES)}")
+        toks = [V.BOS, V.src0 + SOURCES.index(source), V.role0 + ROLES.index(role),
                 V.mode0 + MODES.index(mode), V.len0 + bars - 1]
         cache = []
         for i, t in enumerate(toks[:-1]):
@@ -374,6 +377,9 @@ def _sample(logits, allowed, temperature, top_p, rng) -> int:
 
 
 # ---------------------------------------------------------------------------- for Ghost
+DEFAULT_MIN_PITCHES = {"bass": 2, "arp": 3, "lead": 3, "chords": 3, "pad": 3}
+
+
 class Fingerprints:
     """Every phrase read from the user's music collection (music_dataset.jsonl), so a new part
     can be checked against them: the model must not hand back someone else's hook."""
@@ -415,24 +421,38 @@ class Fingerprints:
 
 def make_part(model: Model, role: str, key: str = "D minor", bars: int = 4, octave: int = 0,
               temperature: float = 0.9, seed: int | None = None, in_key: bool = True,
-              tries: int = 6, avoid: Fingerprints | None = None,
-              max_overlap: float = 0.6) -> tuple[list[dict], dict]:
-    """A new part in the song's key, as Live notes. Re-samples a take that comes out nearly
-    empty (fewer than one note per bar) or that matches a phrase from the user's music
-    collection too closely (more than max_overlap of its notes in the same places)."""
+              tries: int = 8, avoid: Fingerprints | None = None,
+              max_overlap: float = 0.6, style_of: str = "mine",
+              min_pitches: int | None = None) -> tuple[list[dict], dict]:
+    """A new part in the song's key, as Live notes. style_of: "mine" (the user's own parts)
+    or "collection" (the richer lines learned from their music collection). Re-samples a
+    take that comes out nearly empty (fewer than one note per bar), uses fewer than
+    min_pitches different notes (default: 2 for bass, 3 otherwise; 1 allows one-note parts),
+    or matches a phrase from the collection too closely (more than max_overlap of its notes
+    in the same places)."""
+    source = {"mine": "mine", "collection": "music", "music": "music"}.get(style_of)
+    if source is None:
+        raise ModelError('style must be "mine" or "collection"')
+    if min_pitches is None:
+        min_pitches = DEFAULT_MIN_PITCHES.get(role, 3)
     k = style.parse_key(key) or (2, "minor")
     seed = random.randrange(1 << 30) if seed is None else int(seed)
     unit_bars = min(bars, MAX_BARS)
     best = None
     for n in range(max(1, tries)):
-        toks = model.generate(role, k[1], unit_bars, temperature=temperature,
-                              seed=seed + n, in_key=in_key)
+        take_seed = seed + n * 7919               # retries never collide with another seed
+        toks = model.generate(role, k[1], unit_bars, temperature=temperature, source=source,
+                              seed=take_seed, in_key=in_key)
         notes = decode(toks)
         overlap, src = avoid.closest(notes, unit_bars) if avoid else (0.0, "")
-        good = len(notes) >= unit_bars and overlap <= max_overlap
-        rank = (good, overlap <= max_overlap, len(notes) >= unit_bars, -overlap)
+        if len({x[0] for x in notes}) < 3 or len(notes) < 8:
+            overlap = 0.0     # a one- or two-note groove is everybody's, not a hook to avoid
+        varied = len({x[0] for x in notes}) >= min_pitches
+        good = len(notes) >= unit_bars and overlap <= max_overlap and varied
+        rank = (good, overlap <= max_overlap, len(notes) >= unit_bars, varied,
+                len({x[0] for x in notes}), -overlap)
         if best is None or rank > best[0]:
-            best = (rank, notes, seed + n, overlap, src)
+            best = (rank, notes, take_seed, overlap, src)
         if good:
             break
     _, notes, used_seed, overlap, src = best
@@ -447,7 +467,8 @@ def make_part(model: Model, role: str, key: str = "D minor", bars: int = 4, octa
                 out.append({"pitch": int(max(0, min(127, p + shift))), "start": round(t, 4),
                             "duration": round(min(d, total - t), 4), "velocity": int(v)})
     out.sort(key=lambda n: (n["start"], n["pitch"]))
-    info = {"role": role, "key": style.key_name(k), "bars": bars, "seed": used_seed,
+    info = {"role": role, "style": style_of, "key": style.key_name(k), "bars": bars,
+            "seed": used_seed, "different_notes": len({n["pitch"] for n in out}),
             "temperature": temperature, "note_count": len(out),
             "model": model.cfg.get("name", model.path.name)}
     if avoid is not None:

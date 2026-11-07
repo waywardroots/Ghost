@@ -474,6 +474,8 @@ def main():
               and all((n["pitch"] - 2) % 12 in ms.midi_model.SCALES["minor"] for g in got for n in g)
               and got[0] != got[1])
         check("generate_part refuses unknown roles", "error" in ms.generate_part(bass, 10, "drums"))
+        r = ms.generate_part(bass, 10, "lead", style="collection", seed=2, overwrite=True)
+        check("generate_part writes in the collection style", r.get("style") == "collection")
 
         # a plugin whose controls aren't exposed yet
         ms.load_device(vox, "Pro-Q 3", kind="plugin")

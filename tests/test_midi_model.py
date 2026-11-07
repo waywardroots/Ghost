@@ -125,16 +125,31 @@ def main():
               and info["key"] == "F minor" and info["bars"] == 12)
         same = mm.make_part(m, "bass", "F minor", bars=12, seed=3, octave=-1)[0]
         # the copy check: a collection that holds exactly the part the model writes
-        notes_c = mm.decode(m.generate("bass", "minor", 4, seed=11, temperature=1.2))
+        hook_seed = next(sd for sd in range(100)        # a take with a real melody
+                         if len({n[0] for n in mm.decode(m.generate("bass", "minor", 4, seed=sd, temperature=1.2))}) >= 3
+                         and len(mm.decode(m.generate("bass", "minor", 4, seed=sd, temperature=1.2))) >= 8)
+        notes_c = mm.decode(m.generate("bass", "minor", 4, seed=hook_seed, temperature=1.2))
         fp_file = Path(d) / "fp.jsonl"
         fp_file.write_text(json.dumps(dict(clip, project="F:/Music/hook.mp3", source="music",
                                            key="C minor", length_beats=32, notes=notes_c)))
         fp = mm.Fingerprints(fp_file)
         check("the copy check spots a phrase from the collection", fp.closest(notes_c, 4)[0] == 1.0)
-        out2, info2 = mm.make_part(m, "bass", "C minor", bars=4, seed=11, temperature=1.2, avoid=fp)
+        out2, info2 = mm.make_part(m, "bass", "C minor", bars=4, seed=hook_seed, temperature=1.2, avoid=fp)
         check("a take that copies the collection is replaced by another",
-              info2["seed"] != 11 and info2["closest_to_collection"] <= 0.6 and "warning" not in info2)
+              info2["seed"] != hook_seed and info2["closest_to_collection"] <= 0.6 and "warning" not in info2)
         check("same seed, same part", same == out)
+        a = mm.make_part(m, "arp", "D minor", bars=4, seed=1)[1]["seed"]
+        b = mm.make_part(m, "arp", "D minor", bars=4, seed=2)[1]["seed"]
+        check("different seeds give different takes", a != b)
+        out3, info3 = mm.make_part(m, "lead", "D minor", bars=4, seed=4, style_of="collection")
+        check("collection style and a variety floor", info3["style"] == "collection"
+              and (info3["different_notes"] >= 3 or "warning" in info3))
+        try:
+            mm.make_part(m, "lead", "D minor", style_of="jazz")
+            ok = False
+        except mm.ModelError:
+            ok = True
+        check("unknown styles are refused", ok)
         try:
             mm.Model(Path(d) / "missing.npz")
             ok = False

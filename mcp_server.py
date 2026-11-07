@@ -1259,6 +1259,7 @@ def _style_model() -> "midi_model.Model":
 def generate_part(track_index: int, clip_index: int, role: str, key: str = "D minor",
                   bars: int = 4, octave: int = 0, temperature: float = 0.9,
                   seed: Optional[int] = None, in_key: bool = True, takes: int = 1,
+                  style: str = "mine", min_pitches: Optional[int] = None,
                   name: Optional[str] = None, overwrite: bool = False) -> dict:
     """Write a brand-new part with the user's own trained model (learned from every part in
     their projects - see train_midi_model.py). Unlike write_my_pattern, nothing is copied:
@@ -1267,7 +1268,10 @@ def generate_part(track_index: int, clip_index: int, role: str, key: str = "D mi
     longer clips repeat the phrase. temperature: 0.6 = safe and typical of them, 0.9 =
     balanced, 1.2 = adventurous. in_key keeps every note in the key. takes > 1 writes several
     different takes into consecutive clip slots from clip_index so they can be auditioned.
-    A seed gives the same take again. Takes are checked against the phrases read from the
+    style: "mine" writes like the user's own parts (often one- or two-note grooves and sparse
+    leads), "collection" like the richer lines learned from their music collection.
+    min_pitches: fewest different notes a take may use (default 2 for bass, 3 otherwise; 1
+    allows a one-note groove). A seed gives the same take again. Takes are checked against the phrases read from the
     user's music collection and re-written if one is too close to an existing hook
     (closest_to_collection: share of notes matching; a warning says if none could avoid it)."""
     if role not in midi_model.ROLES:
@@ -1280,7 +1284,8 @@ def generate_part(track_index: int, clip_index: int, role: str, key: str = "D mi
     for n in range(takes):
         notes, info = midi_model.make_part(model, role, key=key, bars=bars, octave=octave,
                                            temperature=temperature, seed=seed + 100 * n,
-                                           in_key=in_key, avoid=MUSIC_PHRASES)
+                                           in_key=in_key, avoid=MUSIC_PHRASES,
+                                           style_of=style, min_pitches=min_pitches)
         slot = clip_index + n
         live.send("create_clip", track_index=track_index, clip_index=slot, length=bars * 4,
                   name=(name or f"Ghost {role}") + (f" {n + 1}" if takes > 1 else ""),
