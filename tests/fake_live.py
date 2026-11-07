@@ -324,12 +324,41 @@ class Scene:
         self.fired += 1
 
 
+class _Wrap:
+    """Like Live: every read of song.tracks hands out new wrapper objects that are
+    equal (==) to the track but never the same object (is)."""
+    def __init__(self, t): object.__setattr__(self, "_t", t)
+    def __getattr__(self, k): return getattr(object.__getattribute__(self, "_t"), k)
+    def __setattr__(self, k, v): setattr(object.__getattribute__(self, "_t"), k, v)
+    def __eq__(self, o): return object.__getattribute__(self, "_t") is _unwrap(o)
+    def __ne__(self, o): return not self == o
+    def __hash__(self): return id(object.__getattribute__(self, "_t"))
+
+
+def _unwrap(o):
+    return object.__getattribute__(o, "_t") if isinstance(o, _Wrap) else o
+
+
+class _TrackList(list):
+    """The real list; reads come back wrapped, writes go to the real list."""
+    def __getitem__(self, i):
+        v = list.__getitem__(self, i)
+        return [_Wrap(t) for t in v] if isinstance(i, slice) else _Wrap(v)
+    def __iter__(self):
+        return (_Wrap(t) for t in list.__iter__(self))
+    def index(self, x, *a): return list.index(self, _unwrap(x), *a)
+    def __contains__(self, x): return any(t is _unwrap(x) for t in list.__iter__(self))
+    def insert(self, i, x): list.insert(self, i, _unwrap(x))
+    def append(self, x): list.append(self, _unwrap(x))
+    def remove(self, x): list.remove(self, _unwrap(x))
+
+
 class Song:
     def __init__(self, scenes=8):
         global SONG
         SONG = self
         self.scenes = [Scene() for _ in range(scenes)]
-        self.tracks = []
+        self.tracks = _TrackList()
         self.return_tracks = [types.SimpleNamespace(name="A-Reverb"), types.SimpleNamespace(name="B-Delay")]
         self.tempo = 120.0
         self.signature_numerator, self.signature_denominator = 4, 4

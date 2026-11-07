@@ -149,7 +149,7 @@ class CommandHandler(object):
         return info
 
     def _track_summary(self, index, track):
-        is_master = track is getattr(self.song, "master_track", None)
+        is_master = track == getattr(self.song, "master_track", None)
         out = self._track_summary_base(index, track, is_master)
         out.update(self._group_info(track))
         return out
@@ -792,7 +792,7 @@ class CommandHandler(object):
         for spec in specs:
             d = self._device(track_index, int(spec["device_index"]))
             p = self._find_param(d, list(d.parameters), spec["parameter"])
-            if any(q is p for q, _, _ in drawn):
+            if any(q == p for q, _, _ in drawn):
                 raise CommandError("%s is listed twice" % p.name)
             pts_in = spec.get("points")
             if not isinstance(pts_in, (list, tuple)) or len(pts_in) < 2:
@@ -821,7 +821,7 @@ class CommandHandler(object):
         step = max(0.0625, float(step_beats))
         made_scene, placed, steps = False, 0, 0
         mine = [q for q, _, _ in drawn]
-        others = [q for q in self._automatable(track) if not any(q is m for m in mine)]
+        others = [q for q in self._automatable(track) if not any(q == m for m in mine)]
         kept, found_old = set(), 0
         free = [s for s in track.clip_slots if not s.has_clip]
         if not free:
@@ -1016,7 +1016,7 @@ class CommandHandler(object):
             listen.current_monitoring_state = 2  # Off, so it doesn't feed back
             listen.arm = True
             for t in self._tracks():  # hear only the source; solos are restored afterwards
-                if t is not src and _safe(t, "solo", False):
+                if t != src and _safe(t, "solo", False):
                     t.solo = False
             if src is not None:
                 src.solo = True
@@ -1078,7 +1078,7 @@ class CommandHandler(object):
         song.loop = False
         # nothing of the user's may record: disarm every other track (restored afterwards)
         for t in self._tracks():
-            if t is not listen and _safe(t, "can_be_armed", False) and _safe(t, "arm", False):
+            if t != listen and _safe(t, "can_be_armed", False) and _safe(t, "arm", False):
                 if t not in state["arms"]:
                     state["arms"].append(t)
                 t.arm = False
@@ -1125,7 +1125,7 @@ class CommandHandler(object):
     def _restore_arms(self, st):
         listen = st.get("listen")
         for t in st.get("arms", []):
-            if t is listen or t not in self._tracks():
+            if t == listen or t not in self._tracks():
                 continue
             try:
                 t.arm = True

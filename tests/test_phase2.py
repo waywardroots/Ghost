@@ -112,7 +112,7 @@ def main():
         # Devices and plugins through Live's browser
         r = ms.load_device(bass, "serum", kind="plugin")
         check("load VST by name", r["loaded"] == "Serum" and "Serum" in r["track_devices"]
-              and song.view.selected_track is song.tracks[bass])
+              and song.view.selected_track == song.tracks[bass])
         ms.load_device(drums, "808 Core Kit", kind="drum_kit")
         check("load drum kit (extension ignored)", song.tracks[drums].devices[-1].name == "808 Core Kit")
         ms.load_device(vox, "EQ Eight", kind="audio_effect")
@@ -241,12 +241,7 @@ def main():
             check("group tracks don't break arrangement/session info", ok)
             g = _Group(); song.tracks.insert(0, g)
 
-            class _Ref:  # like Live: each read returns a new wrapper equal to the track
-                def __init__(self, t): self.t = t
-                def __eq__(self, other): return self.t is getattr(other, "t", other)
-                def __ne__(self, other): return not self == other
-                def __hash__(self): return id(self.t)
-            member = song.tracks[1]; member.is_grouped = True; member.group_track = _Ref(g)
+            member = song.tracks[1]; member.is_grouped = True; member.group_track = song.tracks[0]  # a fresh wrapper, like Live
             try:
                 info = ms.get_session_info()["tracks"]
                 ok = info[0].get("group_members") == [1] and info[1].get("in_group") == 0
