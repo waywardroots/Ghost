@@ -5,12 +5,12 @@ It learns from midi_dataset.jsonl (the parts in your own projects, built by midi
 plus music_dataset.jsonl if you've made one (phrases read from tracks you own, built by
 music_dataset.py; tagged so Ghost still asks the model for *your* style), and saves MusicAssistant/model/ghost_midi.npz, which Ghost's generate_part tool uses.
 
-One-time setup (PyTorch with CUDA; pick the line for your setup at https://pytorch.org):
-    py -3.13 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+One-time setup: PyTorch for your GPU (see the README - AMD Radeon cards need AMD's ROCm
+build on Python 3.12; NVIDIA cards the CUDA build from https://pytorch.org).
 
 Train (a few minutes on a modern GPU):
     py -3.13 train_midi_model.py
-    py -3.13 train_midi_model.py --gpu 1            # use the second GPU
+    py -3.13 train_midi_model.py --gpu 1            # pick a GPU yourself
     py -3.13 train_midi_model.py --tempo 118-135    # only parts from projects at those tempos
     py -3.13 train_midi_model.py --stats            # just show what it would learn from
 
@@ -134,7 +134,7 @@ def main():
                     help="how many times each of your own phrases counts against one from the collection")
     ap.add_argument("--out", default=str(app_dir() / "model" / "ghost_midi.npz"))
     ap.add_argument("--tempo", help="only projects in this BPM range, e.g. 118-135")
-    ap.add_argument("--gpu", type=int, default=0, help="which GPU (0, 1, ...)")
+    ap.add_argument("--gpu", type=int, default=None, help="which GPU (default: the one with the most memory)")
     ap.add_argument("--dim", type=int, default=256)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=8)
@@ -174,12 +174,10 @@ def main():
         train = train + [t for t in train if mm.is_source(t, "mine")] * (max(1, a.mine_weight) - 1)
     torch.manual_seed(a.seed)
     rng = random.Random(a.seed)
-    if torch.cuda.is_available():
-        device = f"cuda:{a.gpu}"
-        print("training on", torch.cuda.get_device_name(a.gpu))
-    else:
-        device = "cpu"
-        print("no CUDA GPU found - training on the CPU (slow; check the PyTorch install)")
+    device = mm.pick_gpu(torch, a.gpu)
+    print("training on", torch.cuda.get_device_name(device) if device != "cpu" else "the CPU")
+    if device == "cpu":
+        print(mm.NO_GPU)
 
     cfg = {"name": "ghost_midi", "vocab": len(mm.VOCAB), "dim": a.dim, "layers": a.layers,
            "heads": a.heads, "context": a.context, "dropout": a.dropout,

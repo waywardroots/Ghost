@@ -263,9 +263,12 @@ class Separator:
             sys.exit("Demucs isn't installed - run:  py -3.13 -m pip install demucs mutagen\n"
                      "(or add --no-demucs for a rougher split without it)")
         self.torch, self.apply = torch, apply_model
-        self.device = f"cuda:{gpu}" if torch.cuda.is_available() else "cpu"
+        import midi_model
+        self.device = midi_model.pick_gpu(torch, gpu)
+        print("splitting stems on", torch.cuda.get_device_name(self.device)
+              if self.device != "cpu" else "the CPU")
         if self.device == "cpu":
-            print("no CUDA GPU found - Demucs will be slow on the CPU")
+            print(midi_model.NO_GPU)
         self.model = get_model("htdemucs").to(self.device).eval()
 
     def __call__(self, path: str) -> dict:
@@ -304,7 +307,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folders", nargs="*")
     ap.add_argument("--out", default=str(app_dir() / "music_dataset.jsonl"))
-    ap.add_argument("--gpu", type=int, default=0)
+    ap.add_argument("--gpu", type=int, default=None, help="which GPU (default: the one with the most memory)")
     ap.add_argument("--limit", type=int, default=0, help="only this many new tracks")
     ap.add_argument("--no-demucs", action="store_true", help="rough split without Demucs")
     ap.add_argument("--stats", action="store_true")

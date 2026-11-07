@@ -147,10 +147,16 @@ this track"*, *"find my Diva arps around 125"*, *"use my drum groove from Night 
 A small transformer learns from every bassline, arp, lead, chord and pad part in your
 projects, then writes brand-new parts in your style - not copies.
 
+PyTorch has to match your graphics card. **AMD Radeon** (Windows 11): AMD's ROCm build,
+which needs Python 3.12 and a current Adrenalin driver - install it from AMD's
+[PyTorch on Windows guide](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installrad/windows/install-pytorch.html)
+with `py -3.12 -m pip`, then use `py -3.12` for the commands below. **NVIDIA**:
+`py -3.13 -m pip install torch --index-url https://download.pytorch.org/whl/cu128`.
+Check it with `py -3.12 -c "import torch; print(torch.cuda.is_available())"` - it should say True.
+
 ```
-py -3.13 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-py -3.13 train_midi_model.py --stats     # what it will learn from
-py -3.13 train_midi_model.py             # train on the first GPU (--gpu 1 for the second)
+py -3.12 train_midi_model.py --stats     # what it will learn from
+py -3.12 train_midi_model.py             # train on the GPU with the most memory (--gpu N to choose)
 ```
 Each part is moved to C first, so the model learns your shapes and intervals rather than
 which key a project happened to be in. Projects are split so the model is scored on songs
@@ -160,10 +166,10 @@ it never trained on; training stops when that score stops improving and saves
 
 #### Also learn from the music you own
 ```
-py -3.13 -m pip install demucs mutagen
-py -3.13 music_dataset.py "F:\Music\Melodic Techno Playlists" --limit 5   # try a few first
-py -3.13 music_dataset.py "F:\Music\Melodic Techno Playlists"             # all (resumes)
-py -3.13 train_midi_model.py
+py -3.12 -m pip install demucs mutagen librosa soundfile
+py -3.12 music_dataset.py "F:\Music\Melodic Techno Playlists" --limit 5   # try a few first
+py -3.12 music_dataset.py "F:\Music\Melodic Techno Playlists"             # all (resumes)
+py -3.12 train_midi_model.py
 ```
 Each track is split into stems with Demucs on the GPU; the tempo and bar grid come from the
 kick, the key from the tags (or measured), and the bassline and main lead/arp line are read

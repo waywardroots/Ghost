@@ -41,6 +41,21 @@ class ModelError(Exception):
     pass
 
 
+def pick_gpu(torch, want=None):
+    """The GPU to use: the one asked for, else the one with the most memory (so a CPU's
+    built-in graphics is skipped). Works for NVIDIA (CUDA) and AMD (ROCm) builds of PyTorch."""
+    if not torch.cuda.is_available():
+        return "cpu"
+    if want is not None:
+        return f"cuda:{want}"
+    n = torch.cuda.device_count()
+    return f"cuda:{max(range(n), key=lambda i: torch.cuda.get_device_properties(i).total_memory)}"
+
+
+NO_GPU = ("no GPU found - running on the CPU (slow). PyTorch can't see a GPU: for an AMD "
+          "Radeon card install AMD's ROCm build of PyTorch, for NVIDIA the CUDA build (see README)")
+
+
 # ---------------------------------------------------------------------------- vocabulary
 class Vocab:
     def __init__(self):
