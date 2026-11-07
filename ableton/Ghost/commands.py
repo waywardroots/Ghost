@@ -1146,17 +1146,22 @@ class CommandHandler(object):
         if st.get("mix"):
             song = self.song
             now = float(song.current_song_time)
-            if st.get("phase") != "recording":
+            if st.get("phase") not in ("recording", "finalizing"):
                 raise CommandError("recording never began (playhead at beat %.2f)" % now)
-            if song.is_playing and now < st["rec_end"] + 0.25:
+            if st["phase"] == "recording" and song.is_playing and now < st["rec_end"] + 0.25:
                 return {"done": False, "beat": now, "until": st["rec_end"]}
-            song.stop_playing()
-            try:
-                song.record_mode = False
-            except Exception:
-                pass
+            if st.get("phase") == "recording":
+                song.stop_playing()
+                try:
+                    song.record_mode = False
+                except Exception:
+                    pass
+                st["phase"], st["waits"] = "finalizing", 0
             clip = self._arrangement_recording(st)
-            if clip is None:
+            if clip is None:  # Live adds the new clip a moment after recording stops
+                st["waits"] = st.get("waits", 0) + 1
+                if st["waits"] < 20:
+                    return {"done": False, "finalizing": True}
                 return {"done": True, "file": None,
                         "error": "nothing was recorded (check Live's audio device is running)"}
             spb = 60.0 / float(song.tempo)

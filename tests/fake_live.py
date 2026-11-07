@@ -357,6 +357,7 @@ class Song:
         self._pending_time = float(v)  # applied on the next tick, like real Live
 
     def _tick(self):
+        self._finish_recording()
         if self._pending_time is not None:
             self._song_time, self._pending_time = self._pending_time, None
         for t in self.tracks:
@@ -433,13 +434,23 @@ class Song:
             ac.file_path = render_track(src, beats * 60.0 / self.tempo)
             if not hasattr(rec, "arrangement_clips"):
                 rec.arrangement_clips = []
-            rec.arrangement_clips.append(ac)
+            self._recording = (rec, ac)  # Live adds the clip once recording stops
             self.recorded_solo = src.name if soloed else None
             self._record_began = began
             self._song_time = began + beats  # by the time Ghost checks, it has played through
 
     def stop_playing(self):
         self.is_playing = False
+        rec = getattr(self, "_recording", None)
+        if rec:
+            self._recording = None
+            self._finishing = rec  # appears a moment later
+
+    def _finish_recording(self):
+        rec = getattr(self, "_finishing", None)
+        if rec:
+            self._finishing = None
+            rec[0].arrangement_clips.append(rec[1])
 
     @property
     def can_undo(self):
