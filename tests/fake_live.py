@@ -514,8 +514,13 @@ class Browser:
         self.sounds = F("Sounds", F("Bass", Item("Dark Sub Bass.adv")))
         self.samples = F("Samples", Item("Kick 808.wav"))
         self.user_library = F("User Library", F("Samples", Item("my_vocal_chop.wav")))
+        # a library bigger than Ghost's browser search covers: the file is only reachable
+        # by walking its folder path
+        big = F("Huge", *[F(f"Pack {i}", *[Item(f"hit_{i}_{j}.wav") for j in range(50)])
+                          for i in range(900)])
         self.user_folders = [F("Samples", F("Drums", Item("Kick_Hard_01.wav")),
-                               F("Loops", Item("Dark_Arp_Loop.wav")))]
+                               F("Loops", Item("Dark_Arp_Loop.wav")), big,
+                               F("Samples", F("techno", F("Kicks", Item("Deep_Kick_20.wav")))))]
         self.max_for_live = F("Max for Live")
         self.clips = F("Clips")
         self.packs = F("Packs")

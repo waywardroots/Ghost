@@ -497,6 +497,9 @@ def main():
         sample_file.unlink()
         r = ms.load_sample(drums, r"D:\Samples\Drums\Kick_Hard_01.wav")
         check("sample into Simpler via browser", r["method"] == "browser" and "Simpler" in r["track_devices"])
+        r = ms.load_sample(drums, r"E:\Samples\Samples\techno\Kicks\Deep_Kick_20.wav")
+        check("sample deep in a huge library found by its folder path",
+              r.get("method") == "browser" and r.get("from", "").endswith("Kicks/Deep_Kick_20.wav"))
         expect_error("sample outside browser explained", ms.load_sample, drums,
                      r"C:\nowhere\mystery.wav", contains="Places")
 

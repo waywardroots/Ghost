@@ -390,6 +390,34 @@ class CommandHandler(object):
                     roots.append((cat, item))
         return roots
 
+    def _find_by_path(self, path):
+        """The browser item for a file path, found by matching a Places folder against the
+        path and descending folder by folder (only a few lookups, however big the library).
+        A Places folder named "Samples" for E:\\Samples matches E:\\Samples\\Samples\\x.wav at
+        either "Samples", so every position is tried."""
+        parts = [p for p in path.replace("\\", "/").split("/") if p and not p.endswith(":")]
+        if not parts:
+            return None
+        for cat, root in self._roots(("user_folders", "user_library")):
+            rname = _safe(root, "name", "")
+            for i, part in enumerate(parts[:-1]):
+                if part.lower() != str(rname).lower():
+                    continue
+                item, bpath = root, rname
+                for seg in parts[i + 1:]:
+                    nxt = None
+                    for child in _safe(item, "children", []) or []:
+                        if str(_safe(child, "name", "")).lower() == seg.lower():
+                            nxt = child
+                            break
+                    if nxt is None:
+                        break
+                    item, bpath = nxt, bpath + "/" + nxt.name
+                else:
+                    if _safe(item, "is_loadable", False):
+                        return cat, item, bpath
+        return None
+
     def _walk(self, categories):
         """Breadth-first walk of Live's browser; yields (category, item, path)."""
         queue_ = [(cat, item, item.name, 0) for cat, item in self._roots(categories)]
@@ -473,9 +501,11 @@ class CommandHandler(object):
                 out["transpose"] = transpose
             return out
 
-        # Otherwise go through Live's browser (folder must be in Places / User Library)
+        # Otherwise go through Live's browser (folder must be in Places / User Library):
+        # walk straight down the file's own folders first - a big sample library is far
+        # larger than the browser search below can cover - then fall back to searching
         file_name = os.path.basename(path.replace("\\", "/"))
-        found = self._find(file_name, SAMPLE_CATEGORIES)
+        found = self._find_by_path(path) or self._find(file_name, SAMPLE_CATEGORIES)
         if not found or _match_score(found[1].name, file_name) < 3:
             raise CommandError(
                 "'%s' isn't visible in Live's browser. In Live, add its folder to Places "
