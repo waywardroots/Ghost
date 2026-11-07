@@ -13,11 +13,11 @@ train_midi_model.py picks that file up automatically and tells the model which p
 yours and which came from these tracks, so Ghost can still ask it for *your* style.
 
 Setup (once; PyTorch first, see train_midi_model.py):
-    py -3.13 -m pip install demucs mutagen
+    py -3.12 -m pip install demucs mutagen
 Run (stops and resumes safely - tracks already done are skipped):
-    py -3.13 music_dataset.py "F:\\Music\\Melodic Techno Playlists"
-    py -3.13 music_dataset.py "F:\\Music\\Melodic Techno Playlists" --limit 5   # try a few first
-    py -3.13 music_dataset.py --stats
+    py -3.12 music_dataset.py "F:\\Music\\Melodic Techno Playlists"
+    py -3.12 music_dataset.py "F:\\Music\\Melodic Techno Playlists" --limit 5   # try a few first
+    py -3.12 music_dataset.py --stats
 
 Notes read from audio are rougher than MIDI: basslines come out well; for leads and arps
 only the main line is captured; pads and chords are skipped.
@@ -268,7 +268,7 @@ class Separator:
             from demucs.apply import apply_model
             from demucs.pretrained import get_model
         except ImportError:
-            sys.exit("Demucs isn't installed - run:  py -3.13 -m pip install demucs mutagen\n"
+            sys.exit("Demucs isn't installed - run:  py -3.12 -m pip install demucs mutagen\n"
                      "(or add --no-demucs for a rougher split without it)")
         self.torch, self.apply = torch, apply_model
         import midi_model
@@ -317,6 +317,8 @@ def main():
     ap.add_argument("--out", default=str(app_dir() / "music_dataset.jsonl"))
     ap.add_argument("--gpu", type=int, default=None, help="which GPU (default: the one with the most memory)")
     ap.add_argument("--limit", type=int, default=0, help="only this many new tracks")
+    ap.add_argument("--workers", type=int, default=3,
+                    help="CPU processes reading notes while the GPU splits the next track")
     ap.add_argument("--no-demucs", action="store_true", help="rough split without Demucs")
     ap.add_argument("--stats", action="store_true")
     a = ap.parse_args()
@@ -341,27 +343,53 @@ def main():
         todo = todo[:a.limit]
     print(f"{len(files)} tracks found, {len(todo)} to read")
     sep = Separator(a.gpu, fallback=a.no_demucs)
-    t_start = time.time()
-    with open(out, "a", encoding="utf-8") as f:
-        for i, p in enumerate(todo, 1):
+    t_start, finished = time.time(), 0
+    # The GPU splits the next track while CPU workers read the notes from the last ones.
+    from concurrent.futures import ProcessPoolExecutor
+    pending = {}                                   # future -> (track, time started)
+    with open(out, "a", encoding="utf-8") as f, ProcessPoolExecutor(max_workers=a.workers) as pool:
+
+        def collect(block):
+            nonlocal finished
+            for fut in [x for x in pending if block or x.done()]:
+                p, t0 = pending.pop(fut)
+                finished += 1
+                try:
+                    rows = fut.result()
+                except Exception as e:  # one bad file shouldn't stop the run
+                    print(f"[{finished}/{len(todo)}] {p.name}: skipped ({type(e).__name__}: {e})")
+                    rows = []
+                for r in rows:
+                    f.write(json.dumps(r) + "\n")
+                f.flush()
+                done[str(p)] = p.stat().st_mtime
+                done_file.write_text(json.dumps(done))
+                left = (time.time() - t_start) / finished * (len(todo) - finished) / 60
+                kinds = ", ".join(f"{k} {sum(r['role'] == k for r in rows)}"
+                                  for k in ("bass", "lead", "arp") if any(r["role"] == k for r in rows))
+                print(f"[{finished}/{len(todo)}] {p.name}: {len(rows)} phrases ({kinds or 'none'}) "
+                      f"{time.time() - t0:.0f}s, ~{left:.0f} min left", flush=True)
+
+        for p in todo:
             t0 = time.time()
             try:
                 tags = read_tags(str(p))
-                rows = analyze_stems(sep(str(p)), str(p), tags.get("bpm"), tags.get("key"))
-            except Exception as e:  # one bad file shouldn't stop the run
-                print(f"[{i}/{len(todo)}] {p.name}: skipped ({type(e).__name__}: {e})")
-                rows = []
-            for r in rows:
-                f.write(json.dumps(r) + "\n")
-            f.flush()
-            done[str(p)] = p.stat().st_mtime
-            done_file.write_text(json.dumps(done))
-            left = (time.time() - t_start) / i * (len(todo) - i) / 60
-            kinds = ", ".join(f"{k} {sum(r['role'] == k for r in rows)}"
-                              for k in ("bass", "lead", "arp") if any(r["role"] == k for r in rows))
-            print(f"[{i}/{len(todo)}] {p.name}: {len(rows)} phrases ({kinds or 'none'}) "
-                  f"{time.time() - t0:.0f}s, ~{left:.0f} min left", flush=True)
-    print(f"\nsaved to {out}. Now retrain:  py -3.13 train_midi_model.py")
+                stems = sep(str(p))
+            except Exception as e:
+                finished += 1
+                print(f"[{finished}/{len(todo)}] {p.name}: skipped ({type(e).__name__}: {e})")
+                done[str(p)] = p.stat().st_mtime
+                continue
+            while len(pending) >= a.workers:       # don't pile up stems in memory
+                collect(block=False)
+                if len(pending) >= a.workers:
+                    time.sleep(0.2)
+            pending[pool.submit(analyze_stems, stems, str(p), tags.get("bpm"), tags.get("key"))] = (p, t0)
+            collect(block=False)
+        while pending:
+            collect(block=True)
+        done_file.write_text(json.dumps(done))
+    print(f"\nsaved to {out}. Now retrain:  py -3.12 train_midi_model.py")
 
 
 if __name__ == "__main__":
