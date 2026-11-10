@@ -1,5 +1,6 @@
 """
-Arrangement maps: when each element plays, bar by bar, in the music you own.
+Song library: how each track in the music you own is built - arrangement, drums, notes,
+sound and effects - bar by bar, to build new songs from (not an average of them).
 
 For every track in the folders you give it (e.g. F:\\Music\\Melodic Techno Playlists and
 F:\\Music\\Old Techno) this splits the stems with Demucs on your GPU, finds the bar grid from
@@ -10,12 +11,12 @@ the kick, and measures how loud each element is in every bar:
     hats   - drums above 6 kHz           lead   - other stem 1-8 kHz (leads, arps, stabs)
     vocals - the vocal stem
 
-Saved to MusicAssistant/music_maps.jsonl. Then --blueprints finds the real tracks whose
+Saved to MusicAssistant/song_library.jsonl. Then --blueprints finds the real tracks whose
 layouts are most typical (k-medoids over the bar-by-bar on/off maps), so a new song can follow
 an actual arrangement bar for bar instead of an average of hundreds.
 
-    py -3.12 arrangement_maps.py "F:\\Music\\Melodic Techno Playlists" "F:\\Music\\Old Techno"
-    py -3.12 arrangement_maps.py --blueprints            # the typical layouts, per folder
+    py -3.12 song_library.py "F:\\Music\\Melodic Techno Playlists" "F:\\Music\\Old Techno"
+    py -3.12 song_library.py --blueprints            # the typical layouts, per folder
 Resumes where it stopped; tracks already mapped are skipped.
 """
 from __future__ import annotations
@@ -77,8 +78,93 @@ def track_map(stems: dict, path: str, tag_bpm=None, sr: int = md.SR) -> dict | N
             seg = band[a:max(b, a + 1)]
             row.append(int(round(10 * np.log10(seg.mean() + 1e-12))) if len(seg) else -120)
         levels[el] = row
-    return {"path": path, "bpm": round(bpm, 2), "bars": len(edges) - 1,
-            "first_downbeat_s": round(float(bar_starts[0]), 3), "levels": levels}
+    beats = beats[phase:]                          # step 0 = the first downbeat
+    n_bars = len(edges) - 1
+    row = {"path": path, "bpm": round(bpm, 2), "bars": n_bars,
+           "first_downbeat_s": round(float(bar_starts[0]), 3), "levels": levels}
+    row["drums"] = drum_patterns(spectra["drums"], beats, n_bars, sr, hop)
+    notes = {}
+    for stem, role in (("bass", "bass"), ("other", "lead")):
+        y = stems.get(stem)
+        if y is not None and np.sqrt(np.mean(y ** 2)) >= 1e-4:
+            notes[role] = [n for n in md.transcribe(y, beats, role, sr) if n[1] < n_bars * 16]
+    row["notes"] = notes
+    row["key"] = md.settle_mode(md.detect_key(stems, sr), notes.get("bass", []))
+    row["sound"] = sound_profile(stems, spectra, edges, sr, hop)
+    row["fx"] = echo_profile(stems, beats, sr, hop)
+    return row
+
+
+def drum_patterns(S, beats, n_bars, sr, hop) -> dict:
+    """Per drum element, one 16-character string per bar: 'X' accent, 'x' hit, '.' rest."""
+    import librosa
+    f = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    period = float(np.median(np.diff(beats)))
+    steps = beats[0] + np.arange(n_bars * 16) * period / 4
+    fr = librosa.time_to_frames(steps, sr=sr, hop_length=hop)
+    out = {}
+    for el in ("kick", "clap", "hats"):
+        _, lo, hi = BANDS[el]
+        band = np.sqrt(S[(f >= lo) & (f < hi)].sum(0))   # magnitude: quiet bleed stays small
+        flux = np.maximum(0, np.diff(band, prepend=band[:1]))
+        win = max(1, int(round(period / 4 * sr / hop * 0.35)))
+        strength = np.array([flux[max(0, a - 1):a + win].max() if a < len(flux) else 0.0 for a in fr])
+        ref = np.percentile(strength[strength > 0], 90) if (strength > 0).any() else 1.0
+        hit, accent = strength > 0.35 * ref, strength > 0.75 * ref
+        chars = np.where(accent, "X", np.where(hit, "x", "."))
+        out[el] = ["".join(chars[b * 16:(b + 1) * 16]) for b in range(n_bars)]
+    return out
+
+
+def sound_profile(stems, spectra, edges, sr, hop, section: int = 16) -> dict:
+    """Per stem and 16-bar section: brightness (spectral centroid, Hz), filter movement
+    (how much the brightness moves inside the section) and level (dB)."""
+    import librosa
+    f = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    out = {}
+    for stem in ("bass", "other", "vocals"):
+        S = spectra.get(stem)
+        if S is None:
+            continue
+        cen = (f[:, None] * S).sum(0) / (S.sum(0) + 1e-12)
+        lev = 10 * np.log10(S.sum(0) + 1e-12)
+        rows = []
+        for i in range(0, len(edges) - 1, section):
+            a, b = edges[i], edges[min(i + section, len(edges) - 1)]
+            c, l = cen[a:b], lev[a:b]
+            loud = l > (l.max() - 30) if len(l) else l
+            if not len(c) or not loud.any():
+                rows.append(None)
+                continue
+            rows.append({"bright_hz": int(np.median(c[loud])),
+                         "movement": round(float(np.std(np.log2(c[loud] + 1))), 2),
+                         "level_db": int(round(float(np.median(l[loud]))))})
+        out[stem] = rows
+    return out
+
+
+def echo_profile(stems, beats, sr, hop) -> dict:
+    """Rough effects read-out for the synths and vocals: the strongest echo spacing (in beats,
+    e.g. 0.75 = dotted 8th) and how much of the sound is tail/space between hits (0-1)."""
+    import librosa
+    period = float(np.median(np.diff(beats)))
+    out = {}
+    for stem in ("other", "vocals"):
+        y = stems.get(stem)
+        if y is None or np.sqrt(np.mean(y ** 2)) < 1e-4:
+            continue
+        env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+        env = env - env.mean()
+        ac = np.correlate(env, env, "full")[len(env) - 1:]
+        ac /= ac[0] + 1e-12
+        lags = {b: ac[int(round(b * period * sr / hop))] for b in (0.5, 0.75, 1.0, 1.5)
+                if int(round(b * period * sr / hop)) < len(ac)}
+        best = max(lags, key=lags.get) if lags else None
+        rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+        q = np.percentile(rms, [20, 95])
+        out[stem] = {"echo_beats": best, "echo_strength": round(float(lags.get(best, 0)), 2),
+                     "space": round(float(q[0] / (q[1] + 1e-12)), 2)}
+    return out
 
 
 # ---------------------------------------------------------------------------- blueprints
@@ -207,7 +293,7 @@ def load(path: Path, folder: str | None = None) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folders", nargs="*")
-    ap.add_argument("--out", default=str(app_dir() / "music_maps.jsonl"))
+    ap.add_argument("--out", default=str(app_dir() / "song_library.jsonl"))
     ap.add_argument("--gpu", type=int, default=None)
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0)
@@ -277,7 +363,7 @@ def main():
         while pending:
             collect(True)
         done_file.write_text(json.dumps(done))
-    print(f"\nsaved to {out}. Next:  py -3.12 arrangement_maps.py --blueprints")
+    print(f"\nsaved to {out}. Next:  py -3.12 song_library.py --blueprints")
 
 
 if __name__ == "__main__":

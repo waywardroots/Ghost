@@ -111,7 +111,7 @@ python tests/test_reference_scan.py
 python tests/test_midi_model.py
 ```
 Runs the full chain against a simulated Live, plus preset-file, dataset, pattern, reference
-model and audio-transcription tests (235 checks). The simulated Live hands out a new wrapper object on every
+model and audio-transcription tests (254 checks). The simulated Live hands out a new wrapper object on every
 read, like the real one, so compare Live objects with `==`, never `is`.
 
 ---
@@ -180,16 +180,17 @@ for *yours*, so the extra tracks teach it musical shape without replacing your s
 Every generated take is checked against the collection phrases and rewritten if it's too
 close to an existing hook.
 
-#### Map how the music you own is arranged
+#### Song library: how the music you own is built
 ```
-py -3.12 arrangement_maps.py "F:\Music\Melodic Techno Playlists" "F:\Music\Old Techno"
-py -3.12 arrangement_maps.py --blueprints
+py -3.12 song_library.py "F:\Music\Melodic Techno Playlists" "F:\Music\Old Techno"
 ```
-Splits each track into stems and measures, bar by bar, when the kick, claps, hats, bass, synth
-body (pads/chords), high synths (leads/arps/stabs) and vocals play (`MusicAssistant\music_maps.jsonl`).
-`--blueprints` then picks the real tracks whose layouts are most typical of each folder
-(k-medoids, not averages) and writes `arrangement_blueprints.json`, so a new song can follow an
-actual arrangement bar for bar.
+One GPU pass (Demucs stems) maps every track bar by bar into `MusicAssistant\song_library.jsonl`:
+which elements play (kick, clap, hats, bass, body = pads/chords, lead = leads/arps/stabs,
+vocals), the kick/clap/hat pattern of every bar on the 16th grid, the bass and lead lines with
+the key, brightness/filter movement per 16-bar section, and rough echo/space read-outs.
+Ghost then builds from real songs, not averages: `song_library` searches it, `song_blueprint`
+shows how one song is built (arrangement, drums, notes, sound, fx), `typical_layouts` names the
+real songs whose arrangements are most typical of a folder. Resumes where it stopped.
 
 Then ask for *"a new 8-bar bassline in D minor, give me three takes"*:
 

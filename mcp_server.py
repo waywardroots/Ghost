@@ -1303,6 +1303,122 @@ def write_my_pattern(track_index: int, clip_index: int, pattern_id: str,
     return info
 
 
+# ---- song library (song_library.py): how the user's own music is built ----------------
+LIBRARY_PATH = Path(os.environ.get("GHOST_SONG_LIBRARY", str(app_dir() / "song_library.jsonl")))
+_library_cache: dict = {}
+
+
+def _library() -> list[dict]:
+    import song_library
+    if not LIBRARY_PATH.exists():
+        raise LiveError("the song library hasn't been built yet - run song_library.py on the "
+                        "music folders (see the README)")
+    m = LIBRARY_PATH.stat().st_mtime
+    if _library_cache.get("mtime") != m:
+        _library_cache.update(mtime=m, rows=song_library.load(LIBRARY_PATH), blueprints={})
+    return _library_cache["rows"]
+
+
+def _find_song(track: str) -> dict:
+    words = track.lower().split()
+    hits = [r for r in _library() if all(w in Path(r["path"]).stem.lower() for w in words)]
+    if not hits:
+        raise LiveError(f"no song in the library matches '{track}' - use song_library to search")
+    return hits[0]
+
+
+@tool()
+def song_library(query: str = "", folder: str = "", key: Optional[str] = None,
+                 tempo: Optional[float] = None, limit: int = 10) -> dict:
+    """Search the song library: the user's own music (e.g. F:\\Music melodic techno and old
+    techno) mapped bar by bar - arrangement, drums, notes, sound, effects. query matches the
+    file name (artist/title); folder matches the path; key/tempo rank closest first. Returns
+    short rows; use song_blueprint to see how one song is built."""
+    rows = [r for r in _library() if all(w in r["path"].lower() for w in query.lower().split())
+            and folder.lower() in r["path"].lower()]
+    if key:
+        k = style.parse_key(key)
+        rows.sort(key=lambda r: 0 if style.parse_key(r.get("key")) == k else 1)
+    if tempo:
+        rows.sort(key=lambda r: abs(r["bpm"] - tempo))
+    return {"songs_in_library": len(_library()), "matches": len(rows),
+            "songs": [{"track": Path(r["path"]).stem, "bpm": r["bpm"], "key": r.get("key"),
+                       "bars": r["bars"]} for r in rows[:max(1, min(int(limit), 50))]]}
+
+
+@tool()
+def song_blueprint(track: str, part: str = "arrangement", element: Optional[str] = None,
+                   from_bar: Optional[int] = None, bars: int = 8,
+                   to_key: Optional[str] = None) -> dict:
+    """How one song from the library is built. part:
+    'arrangement' - bar ranges where each element plays (kick, clap, hats, bass, body = pads/
+      chords, lead = leads/arps/stabs, vocals);
+    'drums' - the kick/clap/hats 16-step pattern of each bar ('X' accent, 'x' hit), identical
+      bars grouped as ranges (element= to pick one);
+    'notes' - the bass or lead line (element='bass'|'lead') as rows [pitch, start_beat,
+      length_beats, velocity] for `bars` bars from from_bar (default: where it first plays);
+      to_key transposes it (use as a guide - vary it, don't release another artist's melody);
+    'sound' - brightness / filter movement / level per 16-bar section for bass, other, vocals;
+    'fx' - rough echo spacing (beats) and space for the synths and vocals."""
+    import song_library as sl
+    r = _find_song(track)
+    head = {"track": Path(r["path"]).stem, "bpm": r["bpm"], "key": r.get("key"), "bars": r["bars"]}
+    if part == "arrangement":
+        act = sl.activity(r)
+        return {**head, "elements": {el: sl.ranges(act[el]) for el in sl.ELEMENTS if el in act}}
+    if part == "drums":
+        out = {}
+        for el, pats in r.get("drums", {}).items():
+            if element and el != element:
+                continue
+            groups, start = [], 0
+            for i in range(1, len(pats) + 1):
+                if i == len(pats) or pats[i] != pats[start]:
+                    if "x" in pats[start].lower():
+                        groups.append(f"{start + 1}-{i}: {pats[start]}")
+                    start = i
+            out[el] = groups
+        return {**head, "drums": out}
+    if part == "notes":
+        el = element or "bass"
+        notes = r.get("notes", {}).get(el, [])
+        if not notes:
+            raise LiveError(f"no {el} line was read from this song")
+        start = (from_bar - 1) * 16 if from_bar else (notes[0][1] // 16) * 16
+        rows = [[p, (st - start) / 4, d / 4, v] for p, st, d, v in notes
+                if start <= st < start + bars * 16]
+        shift = 0
+        if to_key:
+            a, b = style.parse_key(r.get("key")), style.parse_key(to_key)
+            if a and b:
+                shift = ((b[0] - a[0] + 6) % 12) - 6
+        rows = [[p + shift, s_, d, v] for p, s_, d, v in rows]
+        return {**head, "element": el, "from_bar": start // 16 + 1, "bars": bars,
+                "transposed": shift, "columns": "pitch, start, duration, velocity", "notes": rows}
+    if part == "sound":
+        return {**head, "sound_per_16_bars": r.get("sound", {})}
+    if part == "fx":
+        return {**head, "fx": r.get("fx", {})}
+    raise LiveError("part must be arrangement, drums, notes, sound or fx")
+
+
+@tool()
+def typical_layouts(folder: str = "", k: int = 3) -> dict:
+    """The real songs whose arrangements are most typical of a library folder (e.g. 'melodic
+    techno', 'old techno'): k-medoids over bar-by-bar element maps, biggest group first, with
+    each song's element bar ranges and a folder summary (when elements enter, kick breaks).
+    Build from one of these with song_blueprint - never from an average."""
+    import song_library as sl
+    rows = [r for r in _library() if folder.lower() in r["path"].lower()]
+    if not rows:
+        raise LiveError(f"no songs in the library under '{folder}'")
+    key = (folder.lower(), int(k))
+    cache = _library_cache.setdefault("blueprints", {})
+    if key not in cache:
+        cache[key] = {"summary": sl.summary(rows), "layouts": sl.blueprints(rows, k)}
+    return cache[key]
+
+
 MODEL_PATH = Path(os.environ.get("GHOST_MIDI_MODEL", str(app_dir() / "model" / "ghost_midi.npz")))
 _model_cache: dict = {}
 MUSIC_PHRASES = midi_model.Fingerprints(Path(os.environ.get(
