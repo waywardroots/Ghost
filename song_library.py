@@ -1,6 +1,6 @@
 """
 Song library: how each track in the music you own is built - arrangement, drums, notes,
-sound and effects - bar by bar, to build new songs from (not an average of them).
+sound and space - bar by bar, to build new songs from (not an average of them).
 
 For every track in the folders you give it (e.g. F:\\Music\\Melodic Techno Playlists and
 F:\\Music\\Old Techno) this splits the stems with Demucs on your GPU, finds the bar grid from
@@ -102,15 +102,22 @@ def drum_patterns(S, beats, n_bars, sr, hop) -> dict:
     period = float(np.median(np.diff(beats)))
     steps = beats[0] + np.arange(n_bars * 16) * period / 4
     fr = librosa.time_to_frames(steps, sr=sr, hop_length=hop)
-    out = {}
+    out, kick_hit = {}, None
     for el in ("kick", "clap", "hats"):
         _, lo, hi = BANDS[el]
         band = np.sqrt(S[(f >= lo) & (f < hi)].sum(0))   # magnitude: quiet bleed stays small
         flux = np.maximum(0, np.diff(band, prepend=band[:1]))
         win = max(1, int(round(period / 4 * sr / hop * 0.35)))
         strength = np.array([flux[max(0, a - 1):a + win].max() if a < len(flux) else 0.0 for a in fr])
+        if el == "clap" and kick_hit is not None and kick_hit.any():
+            # the kick's click lands in the clap band too: take its usual size off on kick
+            # steps, so only claps/snares that stand out from it count there
+            click = np.median(strength[kick_hit])
+            strength = np.where(kick_hit, np.maximum(0, strength - 1.2 * click), strength)
         ref = np.percentile(strength[strength > 0], 90) if (strength > 0).any() else 1.0
         hit, accent = strength > 0.35 * ref, strength > 0.75 * ref
+        if el == "kick":
+            kick_hit = hit
         chars = np.where(accent, "X", np.where(hit, "x", "."))
         out[el] = ["".join(chars[b * 16:(b + 1) * 16]) for b in range(n_bars)]
     return out
@@ -144,26 +151,18 @@ def sound_profile(stems, spectra, edges, sr, hop, section: int = 16) -> dict:
 
 
 def echo_profile(stems, beats, sr, hop) -> dict:
-    """Rough effects read-out for the synths and vocals: the strongest echo spacing (in beats,
-    e.g. 0.75 = dotted 8th) and how much of the sound is tail/space between hits (0-1)."""
+    """How much of each synth/vocal stem is tail and space between hits (0 = dry and
+    gated, toward 1 = washed in reverb/delay). Delay timings can't be told apart from the
+    rhythm of the part itself in a mixed track, so they aren't guessed."""
     import librosa
-    period = float(np.median(np.diff(beats)))
     out = {}
     for stem in ("other", "vocals"):
         y = stems.get(stem)
         if y is None or np.sqrt(np.mean(y ** 2)) < 1e-4:
             continue
-        env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-        env = env - env.mean()
-        ac = np.correlate(env, env, "full")[len(env) - 1:]
-        ac /= ac[0] + 1e-12
-        lags = {b: ac[int(round(b * period * sr / hop))] for b in (0.5, 0.75, 1.0, 1.5)
-                if int(round(b * period * sr / hop)) < len(ac)}
-        best = max(lags, key=lags.get) if lags else None
         rms = librosa.feature.rms(y=y, hop_length=hop)[0]
         q = np.percentile(rms, [20, 95])
-        out[stem] = {"echo_beats": best, "echo_strength": round(float(lags.get(best, 0)), 2),
-                     "space": round(float(q[0] / (q[1] + 1e-12)), 2)}
+        out[stem] = {"space": round(float(q[0] / (q[1] + 1e-12)), 2)}
     return out
 
 

@@ -1359,7 +1359,7 @@ def song_blueprint(track: str, part: str = "arrangement", element: Optional[str]
       length_beats, velocity] for `bars` bars from from_bar (default: where it first plays);
       to_key transposes it (use as a guide - vary it, don't release another artist's melody);
     'sound' - brightness / filter movement / level per 16-bar section for bass, other, vocals;
-    'fx' - rough echo spacing (beats) and space for the synths and vocals."""
+    'fx' - how much tail/space (reverb, delay wash) the synths and vocals have, 0-1."""
     import song_library as sl
     r = _find_song(track)
     head = {"track": Path(r["path"]).stem, "bpm": r["bpm"], "key": r.get("key"), "bars": r["bars"]}

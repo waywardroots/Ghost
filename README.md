@@ -187,7 +187,7 @@ py -3.12 song_library.py "F:\Music\Melodic Techno Playlists" "F:\Music\Old Techn
 One GPU pass (Demucs stems) maps every track bar by bar into `MusicAssistant\song_library.jsonl`:
 which elements play (kick, clap, hats, bass, body = pads/chords, lead = leads/arps/stabs,
 vocals), the kick/clap/hat pattern of every bar on the 16th grid, the bass and lead lines with
-the key, brightness/filter movement per 16-bar section, and rough echo/space read-outs.
+the key, brightness/filter movement per 16-bar section, and how much tail/space (reverb or delay wash) the synths and vocals have.
 Ghost then builds from real songs, not averages: `song_library` searches it, `song_blueprint`
 shows how one song is built (arrangement, drums, notes, sound, fx), `typical_layouts` names the
 real songs whose arrangements are most typical of a folder. Resumes where it stopped.
