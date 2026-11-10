@@ -279,7 +279,7 @@ class Separator:
             print(midi_model.NO_GPU)
         self.model = get_model("htdemucs").to(self.device).eval()
 
-    def __call__(self, path: str) -> dict:
+    def __call__(self, path: str, keep=("drums", "bass", "other")) -> dict:
         import librosa
         if self.model is None:                     # rough split: low end vs the rest
             y, _ = librosa.load(path, sr=SR, mono=True)
@@ -300,7 +300,7 @@ class Separator:
                              split=True, overlap=0.25, progress=False)[0]
         src = (src * sd + mu).mean(1).cpu().numpy()   # mono stems
         return {name: librosa.resample(src[i], orig_sr=44100, target_sr=SR)
-                for i, name in enumerate(self.model.sources) if name in ("drums", "bass", "other")}
+                for i, name in enumerate(self.model.sources) if name in keep}
 
 
 def read_tags(path):

@@ -180,6 +180,17 @@ for *yours*, so the extra tracks teach it musical shape without replacing your s
 Every generated take is checked against the collection phrases and rewritten if it's too
 close to an existing hook.
 
+#### Map how the music you own is arranged
+```
+py -3.12 arrangement_maps.py "F:\Music\Melodic Techno Playlists" "F:\Music\Old Techno"
+py -3.12 arrangement_maps.py --blueprints
+```
+Splits each track into stems and measures, bar by bar, when the kick, claps, hats, bass, synth
+body (pads/chords), high synths (leads/arps/stabs) and vocals play (`MusicAssistant\music_maps.jsonl`).
+`--blueprints` then picks the real tracks whose layouts are most typical of each folder
+(k-medoids, not averages) and writes `arrangement_blueprints.json`, so a new song can follow an
+actual arrangement bar for bar.
+
 Then ask for *"a new 8-bar bassline in D minor, give me three takes"*:
 
 - `generate_part` writes a new part (bass, arp, lead, chords or pad) in the song's key.
