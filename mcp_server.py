@@ -272,8 +272,22 @@ def add_notes(track_index: int, clip_index: int, notes: list[Note], replace: boo
 
 @tool()
 def get_notes(track_index: int, clip_index: int) -> dict:
-    """Read all MIDI notes in a clip (to analyze or build on the user's ideas)."""
-    return live.send("get_notes", track_index=track_index, clip_index=clip_index)
+    """Read all MIDI notes in a clip (to analyze or build on the user's ideas). Notes come back
+    as compact rows [pitch, start, duration, velocity] (muted notes get a 5th value, 1)."""
+    r = live.send("get_notes", track_index=track_index, clip_index=clip_index)
+    rows = []
+    for n in r.get("notes", []):
+        row = [n["pitch"], _num(n["start"]), _num(n["duration"]), int(round(n["velocity"]))]
+        if n.get("mute"):
+            row.append(1)
+        rows.append(row)
+    return {"clip_length_beats": r.get("clip_length_beats"),
+            "columns": "pitch, start, duration, velocity", "notes": rows}
+
+
+def _num(x):
+    x = round(float(x), 4)
+    return int(x) if x == int(x) else x
 
 
 @tool()
@@ -342,8 +356,24 @@ class Section(BaseModel):
 
 @tool()
 def get_arrangement_info() -> dict:
-    """What's already in the Arrangement view: clips per track (start/end bar) and locators."""
-    return live.send("get_arrangement_info")
+    """What's already in the Arrangement view: per track, each clip name with the bar ranges
+    it covers (back-to-back copies are joined, e.g. 'Kick: 1-49, 121-185'), and locators."""
+    r = live.send("get_arrangement_info")
+    for t in r.get("tracks", []):
+        t["clips"] = _clip_ranges(t.get("clips", []))
+    return r
+
+
+def _clip_ranges(clips: list) -> dict:
+    """[{name, start_bar, end_bar}, ...] -> {name: "1-49, 121-185"} (end bar exclusive)."""
+    spans: dict[str, list] = {}
+    for c in sorted(clips, key=lambda c: c["start_bar"]):
+        lst = spans.setdefault(c.get("name") or "(clip)", [])
+        if lst and abs(lst[-1][1] - c["start_bar"]) < 1e-6:
+            lst[-1][1] = c["end_bar"]
+        else:
+            lst.append([c["start_bar"], c["end_bar"]])
+    return {n: ", ".join(f"{_num(a)}-{_num(b)}" for a, b in v) for n, v in spans.items()}
 
 
 @tool()
@@ -477,7 +507,8 @@ def set_locators(locators: list[Locator], remove_existing: bool = False) -> list
     info = live.send("get_session_info")
     num, den = (int(x) for x in info["time_signature"].split("/"))
     bpb = num * 4.0 / den
-    return _place_locators([((l.bar - 1) * bpb, l.name) for l in locators], remove_existing)
+    placed = _place_locators([((l.bar - 1) * bpb, l.name) for l in locators], remove_existing)
+    return [{"locators": len(placed), "at": ", ".join(f"{c['name']}@{_num(c['bar'])}" for c in placed)}]
 
 
 @tool()
@@ -535,10 +566,22 @@ def load_sample(track_index: int, path: str, clip_index: Optional[int] = None,
 @tool()
 def get_device_parameters(track_index: int, device_index: int,
                           query: Optional[str] = None) -> dict:
-    """List a device's parameters: raw value, what it shows (display, e.g. '800 Hz'), range,
-    and choices for switches. query filters by name (e.g. 'filter', 'env', 'osc')."""
-    return live.send("get_device_parameters", track_index=track_index,
-                     device_index=device_index, query=query)
+    """List a device's parameters as compact lines 'index name = display [min..max]' (switches
+    list their choices instead). query filters by name (e.g. 'filter', 'env', '1 '); use it to
+    keep the answer short. set_device_parameters takes the name and a display value."""
+    r = live.send("get_device_parameters", track_index=track_index,
+                  device_index=device_index, query=query)
+    lines = []
+    for prm in r.get("parameters", []):
+        line = f"{prm['index']} {prm['name']} = {prm.get('display', prm.get('value'))}"
+        if prm.get("choices"):
+            line += " {" + "|".join(map(str, prm["choices"])) + "}"
+        else:
+            line += f" [{_num(prm.get('min', 0))}..{_num(prm.get('max', 1))}] raw {_num(prm.get('value', 0))}"
+        lines.append(line)
+    out = {k: v for k, v in r.items() if k != "parameters"}
+    out["parameters"] = lines
+    return out
 
 
 class ParamSetting(BaseModel):
@@ -770,7 +813,7 @@ def _presets_call(fn, *a, **kw):
 
 
 @tool()
-def find_preset_files(synth: str = "", query: str = "", limit: int = 40) -> list:
+def find_preset_files(synth: str = "", query: str = "", limit: int = 15) -> list:
     """Find preset files Ghost can read and write: Serum 2 and u-he (Diva, Hive, Repro-1, Repro-5).
     query matches words in the name or folder (e.g. 'init', 'bass', 'pad'). The user's own
     presets are listed first."""
@@ -817,10 +860,16 @@ def _wait_for_file(path: str, timeout: float = 8.0):
         raise LiveError(f"Live said it recorded to {path}, but that file doesn't exist")
 
 
-def _report(path: str, title: str, compare_to: Optional[str]):
+KEY_MEASURES = ("bands_percent", "lufs_integrated", "peak_db", "rms_db", "crest_db",
+                "brightness_hz", "pitch_note", "stereo_width", "low_end_width", "attack_ms",
+                "sustain_ratio", "seconds", "silent")
+
+
+def _report(path: str, title: str, compare_to: Optional[str], picture: bool = False,
+            detail: bool = False):
     m = listen.analyze(path)
-    result = {"heard": m.get("summary"), "measurements": {k: v for k, v in m.items() if k != "summary"},
-              "audio_file": path}
+    meas = {k: v for k, v in m.items() if k != "summary" and (detail or k in KEY_MEASURES)}
+    result = {"heard": m.get("summary"), "measurements": meas, "audio_file": path}
     if compare_to:
         ref_path = _last_heard.get("path") if compare_to == "last" else compare_to
         if not ref_path or not Path(ref_path).exists():
@@ -829,8 +878,8 @@ def _report(path: str, title: str, compare_to: Optional[str]):
         result["compared_with"] = ref_path
         result["reference_heard"] = ref.get("summary")
         result["differences"] = listen.compare(m, ref)["differences"]
-    out = [json.dumps(result, indent=1, default=str)]
-    if not m.get("silent"):
+    out = [json.dumps(result, separators=(",", ":"), default=str)]
+    if picture and not m.get("silent"):
         png = listen.spectrogram(path, str(Path(path).with_suffix(".png")), title)
         out.append(Image(path=png))
     _last_heard.update(path=path)
@@ -848,11 +897,12 @@ DEFAULT_PHRASE = [  # one long note (tone, movement, sustain), then short ones (
 @tool()
 def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
                     clip_index: Optional[int] = None, beats: float = 8.0,
-                    compare_to: Optional[str] = None, bar: Optional[float] = None):
+                    compare_to: Optional[str] = None, bar: Optional[float] = None,
+                    picture: bool = False, detail: bool = False):
     """Hear a track: Ghost plays a phrase on it (soloed), records the result inside Live through
     Resampling, measures it (low end per band, brightness, pitch, grit, movement/beating, stereo
-    width, attack/sustain) and returns a spectrogram picture. Use after shaping a sound to check
-    it. notes: the phrase to play (default: one long C2 then three short notes; use low notes
+    width, attack/sustain). picture=true adds a spectrogram image and detail=true every
+    measurement (both cost more; the summary is usually enough). Use after shaping a sound. notes: the phrase to play (default: one long C2 then three short notes; use low notes
     like 36 for bass, chords for pads). clip_index: play an existing clip instead.
     bar: play the Arrangement from that bar with the track soloed instead - works for audio
     tracks without Session clips and for GROUPS, which the user treats as one sound (a group
@@ -871,21 +921,25 @@ def listen_to_track(track_index: int, notes: Optional[list[Note]] = None,
             live.send("end_audition")
             raise
         return _finish_listen(start, f"track{track_index}_bar{bar:g}",
-                              f"Track {track_index} from bar {bar:g}", compare_to)
+                              f"Track {track_index} from bar {bar:g}", compare_to,
+                              picture=picture, detail=detail)
     if clip_index is None and not notes:
         notes = DEFAULT_PHRASE
     start = live.send("start_audition", track_index=track_index, beats=beats,
                       notes=[n.model_dump() for n in notes] if notes else None, clip_index=clip_index)
-    return _finish_listen(start, f"track{track_index}", f"Track {track_index}", compare_to)
+    return _finish_listen(start, f"track{track_index}", f"Track {track_index}", compare_to,
+                          picture=picture, detail=detail)
 
 
 @tool()
-def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = None):
+def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = None,
+                  picture: bool = False, detail: bool = False):
     """Hear the whole song: Ghost plays the Arrangement from a bar (nothing soloed), records the
     master output through Resampling and measures it like listen_to_track, plus loudness
     (LUFS) and peak. Use it to mix and master: check a drop, a breakdown, the low end of the
     full mix. bars: up to 16. compare_to: a reference track path (e.g. from
-    find_reference_tracks) or 'last'. Stops Live's playback while it records."""
+    find_reference_tracks) or 'last'. picture/detail as in listen_to_track. Stops Live's
+    playback while it records."""
     bars = max(1, min(16, int(bars)))
     bpb = _beats_per_bar()
     _settle_playhead(bar, bpb)
@@ -897,7 +951,7 @@ def listen_to_mix(bar: float = 2, bars: int = 8, compare_to: Optional[str] = Non
         live.send("end_audition")
         raise
     return _finish_listen(start, f"mix_bar{bar:g}", f"Mix from bar {bar:g}", compare_to,
-                          loudness=True)
+                          loudness=True, picture=picture, detail=detail)
 
 
 def _beats_per_bar() -> float:
@@ -945,7 +999,7 @@ def _arm_recording() -> None:
 
 
 def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
-                   loudness: bool = False):
+                   loudness: bool = False, picture: bool = False, detail: bool = False):
     try:
         time.sleep(start["wait_seconds"])
         for _ in range(40):
@@ -968,7 +1022,7 @@ def _finish_listen(start: dict, tag: str, title: str, compare_to: Optional[str],
     dest = _copy_recording(r["file"], tag)
     if r.get("trim_seconds") is not None:  # Arrangement recordings include the run-up
         dest = _trim_recording(dest, r["trim_seconds"], r.get("keep_seconds"), tag)
-    out = _report(str(dest), title, compare_to)
+    out = _report(str(dest), title, compare_to, picture, detail)
     if loudness:
         out = _add_loudness(out, str(dest))
     return out
@@ -1018,10 +1072,10 @@ def _add_loudness(out, path: str):
         peak = 20 * np.log10(max(float(np.max(np.abs(y))), 1e-9))
         data = _json.loads(out[0])
         data.setdefault("measurements", {})["lufs_integrated"] = lufs
-        data["measurements"]["sample_peak_db"] = round(peak, 2)
+        data["measurements"]["peak_db"] = round(peak, 2)
         data.setdefault("heard", []).append(
             f"Loudness: {lufs} LUFS integrated, peak {peak:.1f} dBFS.")
-        return [_json.dumps(data, indent=1)] + list(out[1:])
+        return [_json.dumps(data, separators=(",", ":"))] + list(out[1:])
     except Exception as e:  # loudness is a bonus; never fail the listen over it
         import sys
         print("loudness measurement failed: %s" % e, file=sys.stderr)
@@ -1082,7 +1136,7 @@ def _db() -> sqlite3.Connection:
 def search_samples(query: str = "", category: Optional[str] = None, key: Optional[str] = None,
                    bpm: Optional[float] = None, bpm_tolerance: float = 2.0,
                    loops_only: bool = False, one_shots_only: bool = False,
-                   limit: int = 20) -> list:
+                   limit: int = 8) -> list:
     """Search the user's own sample library. category: kick, snare, clap, hihat, cymbal, perc,
     drums, 808, bass, vocal, fx, pad, keys, guitar, strings, brass, lead, chords, melody, synth.
     key like 'Am' or 'F# minor'. Returns full paths for load_sample."""
@@ -1109,9 +1163,17 @@ def search_samples(query: str = "", category: Optional[str] = None, key: Optiona
     sql += " ORDER BY RANDOM() LIMIT ?"  # variety instead of always the same files
     args.append(max(1, min(int(limit), 100)))
     con = _db()
-    return [{"name": r["name"], "path": r["path"], "category": r["category"], "bpm": r["bpm"],
-             "key": r["musical_key"], "loop": bool(r["is_loop"]), "seconds": r["duration"]}
-            for r in con.execute(sql, args)]
+    out = []
+    for r in con.execute(sql, args):
+        row = {"path": r["path"], "seconds": round(r["duration"] or 0, 2)}
+        if r["bpm"]:
+            row["bpm"] = r["bpm"]
+        if r["musical_key"]:
+            row["key"] = r["musical_key"]
+        if r["is_loop"]:
+            row["loop"] = True
+        out.append(row)
+    return out
 
 
 @tool()
@@ -1146,7 +1208,7 @@ def _ref_db():
 @tool()
 def find_reference_tracks(query: Optional[str] = None, genre: Optional[str] = None,
                           key: Optional[str] = None, tempo: Optional[float] = None,
-                          yours: Optional[bool] = None, limit: int = 15) -> list[dict]:
+                          yours: Optional[bool] = None, limit: int = 6) -> list[dict]:
     """Search the finished tracks the user owns (their DJ library and their own releases) to
     use as references: query matches artist/title, genre matches the folder (e.g. 'melodic
     techno'), key/tempo rank the closest first, yours=true for their own released tracks.

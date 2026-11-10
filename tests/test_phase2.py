@@ -91,10 +91,10 @@ def main():
                  for i, p in enumerate([45, 45, 48, 43])]
         check("add notes", ms.add_notes(bass, 0, notes)["added"] == 4)
         got = ms.get_notes(bass, 0)["notes"]
-        check("read notes back", [n["pitch"] for n in got] == [45, 45, 48, 43]
-              and got[0]["velocity"] == 110)
+        check("read notes back as compact rows", [n[0] for n in got] == [45, 45, 48, 43]
+              and got[0] == [45, 0, 0.9, 110])
         ms.add_notes(bass, 0, [ms.Note(pitch=36, start=0, duration=4)], replace=True)
-        check("replace notes", [n["pitch"] for n in ms.get_notes(bass, 0)["notes"]] == [36])
+        check("replace notes", [n[0] for n in ms.get_notes(bass, 0)["notes"]] == [36])
         expect_error("bad pitch rejected", ms.live.send, "add_notes", track_index=bass, clip_index=0,
                      notes=[{"pitch": 200, "start": 0, "duration": 1}], contains="0-127")
         ms.create_clip(drums, 6, 4)
@@ -122,13 +122,14 @@ def main():
         check("browser search", hits and hits[0]["name"] == "ValhallaVintageVerb")
         # ---- sound design on a synth (simulated Serum) ----
         info = ms.get_device_parameters(bass, 0)
-        names = [p["name"] for p in info["parameters"]]
-        check("read parameters with display values", names[:2] == ["Device On", "Filter Cutoff"]
-              and info["parameters"][1]["display"].endswith("Hz"))
-        check("choices listed for switches",
-              info["parameters"][5]["choices"] == ["Sine", "Triangle", "Saw", "Square", "Noise"])
-        check("parameter search", [p["name"] for p in
-              ms.get_device_parameters(bass, 0, query="amp")["parameters"]] == ["Amp Attack", "Amp Release"])
+        lines = info["parameters"]
+        check("read parameters as compact lines with display values",
+              lines[0].startswith("0 Device On = ") and lines[1].startswith("1 Filter Cutoff = ")
+              and "Hz [" in lines[1] and " raw " in lines[1])
+        check("choices listed for switches", lines[5].endswith("{Sine|Triangle|Saw|Square|Noise}"))
+        amp = ms.get_device_parameters(bass, 0, query="amp")["parameters"]
+        check("parameter search", [l.split(" = ")[0].split(" ", 1)[1] for l in amp]
+              == ["Amp Attack", "Amp Release"])
         S = ms.ParamSetting
         r = ms.set_device_parameters(bass, 0, [
             S(parameter="Filter Cutoff", value="800 Hz"),
@@ -191,9 +192,13 @@ def main():
             out = ms.listen_to_track(bass, beats=8)
             import json as _j
             dark = _j.loads(out[0])
-            check("listen returns measurements + picture", "heard" in dark and isinstance(out[1], ms.Image))
+            check("listen returns a short report and no picture by default",
+                  "heard" in dark and len(out) == 1 and "volume_movement_hz" not in dark["measurements"])
             check("hears the pitch", dark["measurements"]["pitch_note"] == "C1")
-            check("hears the beating of detuned saws", dark["measurements"]["volume_movement_hz"] is not None)
+            out = ms.listen_to_track(bass, beats=8, picture=True, detail=True)
+            full = _j.loads(out[0])
+            check("picture and full detail on request", isinstance(out[1], ms.Image)
+                  and full["measurements"]["volume_movement_hz"] is not None)
             check("session restored after listening", len(song.tracks) == tracks_before
                   and len(song.scenes) == scenes_before
                   and all(t.name != "Ghost Listen" for t in song.tracks))
@@ -299,6 +304,10 @@ def main():
         check("next build goes after existing work", r2["sections"][0]["start_bar"] == 25)
         info = ms.get_arrangement_info()
         check("arrangement info", info["length_bars"] == 28 and [l["name"] for l in info["locators"]] == ["Intro", "Drop", "Outro"])
+        drum_clips = next(t for t in info["tracks"] if t["index"] == drums)["clips"]
+        check("arrangement clips joined into bar ranges",
+              all(isinstance(v, str) and "-" in v for v in drum_clips.values())
+              and any(v.startswith("1-") for v in drum_clips.values()))
         r3 = ms.build_arrangement([Sec(name="New A", bars=4, clips=[Ref(track_index=drums)]),
                                    Sec(name="New B", bars=4, clips=[Ref(track_index=drums)])], start_bar=1)
         names = sorted((c.time, c.name) for c in song.cue_points)
@@ -308,9 +317,10 @@ def main():
         song.cue_points.append(fake_live.types.SimpleNamespace(time=60.0, name="9"))
         locs = ms.set_locators([ms.Locator(bar=1, name="Intro"), ms.Locator(bar=9, name="Drop")],
                                remove_existing=True)
-        check("set_locators replaces wrong ones", [(l["bar"], l["name"]) for l in locs] == [(1, "Intro"), (9, "Drop")])
+        check("set_locators replaces wrong ones", locs[0]["at"] == "Intro@1, Drop@9")
         locs = ms.set_locators([ms.Locator(bar=9, name="Drop!")])
-        check("set_locators renames in place", [(l["bar"], l["name"]) for l in locs] == [(1, "Intro"), (9, "Drop!")])
+        check("set_locators renames in place", locs[0]["at"] in ("Drop!@9", "Intro@1, Drop!@9")
+              and sorted((c.time, c.name) for c in song.cue_points) == [(0, "Intro"), (32, "Drop!")])
 
         # ---- arrangement editing: pads, variations, audio, automation ----
         song.tracks[drums].devices.append(fake_live.DrumRack())
@@ -454,7 +464,7 @@ def main():
         got = ms.get_notes(bass, 6)
         check("your-style pattern written in the song's key",
               r["transposed"] == -3 and got["clip_length_beats"] == 8
-              and [n["pitch"] for n in got["notes"]][:3] == [38, 41, 45] and len(got["notes"]) == 6)
+              and [n[0] for n in got["notes"]][:3] == [38, 41, 45] and len(got["notes"]) == 6)
         check("pattern errors come back as messages",
               "error" in ms.write_my_pattern(bass, 7, "missing-id"))
 
@@ -470,8 +480,8 @@ def main():
         got = [ms.get_notes(bass, 8)["notes"], ms.get_notes(bass, 9)["notes"]]
         check("generate_part writes takes in the song's key",
               len(r["takes"]) == 2 and r["takes"][1]["clip_index"] == 9
-              and all(n["start"] < 8 for g in got for n in g)
-              and all((n["pitch"] - 2) % 12 in ms.midi_model.SCALES["minor"] for g in got for n in g)
+              and all(n[1] < 8 for g in got for n in g)
+              and all((n[0] - 2) % 12 in ms.midi_model.SCALES["minor"] for g in got for n in g)
               and got[0] != got[1])
         check("generate_part refuses unknown roles", "error" in ms.generate_part(bass, 10, "drums"))
         r = ms.generate_part(bass, 10, "lead", style="collection", seed=2, overwrite=True)

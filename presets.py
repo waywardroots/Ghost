@@ -107,8 +107,8 @@ def find_presets(synth: str = "", query: str = "", limit: int = 40) -> list[dict
     hits, scanned = [], 0
     for root in preset_roots():
         for p in root.rglob("*"):
-            if not _is_preset(p):
-                continue
+            if not _is_preset(p) or p.name.startswith("._") or "__MACOSX" in p.parts:
+                continue  # macOS resource-fork leftovers from zip files, not real presets
             scanned += 1
             if scanned > MAX_FILES:
                 break
