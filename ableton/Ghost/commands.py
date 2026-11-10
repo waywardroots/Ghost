@@ -1132,11 +1132,16 @@ class CommandHandler(object):
         now = float(song.current_song_time)
         if not song.is_playing:
             raise CommandError("Live stopped before recording began")
-        if now < st["play_from"] - 0.01:
-            return {"armed": False, "beat": now}  # the jump hasn't landed yet
-        if now > st["rec_start"] - 0.25:
-            raise CommandError("the playhead passed the run-up bar before recording began "
-                               "(beat %.2f)" % now)
+        if now < st["play_from"] - 0.01 or now > st["rec_start"] - 0.25:
+            # not in the run-up bar yet. Live can drop a jump asked for in the same moment
+            # playback starts, and then just plays on from its start marker - so ask again
+            # (nothing records until record goes on, so jumping back is harmless)
+            st["jumps"] = st.get("jumps", 0) + 1
+            if st["jumps"] > 30:
+                raise CommandError("Live's playhead wouldn't jump to the run-up bar (beat %.2f)"
+                                   % now)
+            song.current_song_time = st["play_from"]
+            return {"armed": False, "beat": now}
         song.record_mode = True
         st["phase"] = "recording"
         return {"armed": True, "beat": now}

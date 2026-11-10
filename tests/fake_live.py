@@ -387,6 +387,8 @@ class Song:
 
     def _tick(self):
         self._finish_recording()
+        if getattr(self, "_starting", False):
+            self._starting, self._pending_time = False, None
         if self._pending_time is not None:
             self._song_time, self._pending_time = self._pending_time, None
         for t in self.tracks:
@@ -433,6 +435,9 @@ class Song:
     def start_playing(self):  # plays from Live's start marker
         self._song_time = getattr(self, "start_marker", 0.0)
         self.is_playing = True
+        # real Live begins playback on its next update and can drop a jump asked for in the
+        # same moment, so the playhead carries on from the start marker
+        self._starting = True
 
     def continue_playing(self):
         self.is_playing = True
